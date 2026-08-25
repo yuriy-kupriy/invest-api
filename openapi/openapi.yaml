@@ -1,0 +1,589 @@
+openapi: 3.0.3
+
+info:
+  title: Invest API
+  version: 1.0.0
+  description: |
+    Money Manager з детальним трекінгом інвестицій.
+
+    Рахунок (`Account`) і транзакція (`Transaction`) — єдина модель для готівки, банку, брокерського
+    рахунку й нерухомості; тип задається enum-ом, а не окремою підсистемою.
+
+    Домовленості, які діють на весь API:
+
+    - **Гроші — цілі копійки.** `amount_cents`, `balance_cents` — `integer`, ніяких float і ніяких
+      рядків-decimal на кшталт `"2600.00"`. Валюта завжди явна, окремим полем.
+    - **Кількість паперів — `quantity_micro`**, ціле число, помножене на 10^6. Дробові акції теж не float.
+    - **Формат на дроті — `snake_case`.**
+    - **Помилки — `application/problem+json`** (RFC 9457) з єдиною схемою `Problem`.
+    - **Пагінація — курсорна.** Курсор непрозорий і належить серверу.
+    - **Час — ISO 8601 UTC** (`format: date-time`).
+
+  contact:
+    name: Yurii Kuprii
+  license:
+    name: UNLICENSED
+
+servers:
+  - url: http://localhost:3000
+    description: Локальний застосунок з runtime-валідацією проти цієї спеки
+
+# Авторизації в API поки свідомо немає — вона зʼявиться в ДЗ #24 (JWT + RBAC).
+# Явний порожній список закриває redocly-правило security-defined.
+security: []
+
+tags:
+  - name: accounts
+    description: Рахунки — готівка, банк, брокерський рахунок, нерухомість
+  - name: transactions
+    description: Транзакції — доходи, витрати, перекази, купівля й продаж активів
+
+paths:
+  /accounts:
+    get:
+      operationId: listAccounts
+      summary: Список рахунків
+      description: Повертає сторінку рахунків, відсортованих за `created_at DESC, id DESC`.
+      tags: [accounts]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Скільки рахунків повернути на одній сторінці.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: cursor
+          in: query
+          required: false
+          description: >
+            Непрозорий токен наступної сторінки — його видає сервер у полі `next_cursor`.
+            Клієнт не парсить і не конструює його самостійно: внутрішня структура токена належить
+            серверу й може змінитися без попередження. Єдиний коректний спосіб використання —
+            передати назад рівно те значення, яке прийшло у попередній відповіді.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 512
+      responses:
+        '200':
+          description: Сторінка рахунків
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      operationId: createAccount
+      summary: Створити рахунок
+      description: >
+        Створює рахунок із нульовим або заданим початковим балансом.
+        Повертає `201` із заголовком `Location` на створений ресурс.
+      tags: [accounts]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountCreate'
+      responses:
+        '201':
+          description: Рахунок створено
+          headers:
+            Location:
+              description: URI створеного рахунку
+              schema:
+                type: string
+                format: uri-reference
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /accounts/{account_id}:
+    get:
+      operationId: getAccount
+      summary: Отримати рахунок
+      tags: [accounts]
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          description: Ідентифікатор рахунку.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Рахунок
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /transactions:
+    get:
+      operationId: listTransactions
+      summary: Список транзакцій
+      description: >
+        Повертає сторінку транзакцій, відсортованих за `occurred_at DESC, id DESC`.
+        Необовʼязковий фільтр `account_id` звужує вибірку до одного рахунку.
+      tags: [transactions]
+      parameters:
+        - name: account_id
+          in: query
+          required: false
+          description: Показати транзакції лише цього рахунку.
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          description: Скільки транзакцій повернути на одній сторінці.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: cursor
+          in: query
+          required: false
+          description: >
+            Непрозорий токен наступної сторінки — його видає сервер у полі `next_cursor`.
+            Клієнт не парсить і не конструює його самостійно: внутрішня структура токена належить
+            серверу й може змінитися без попередження. Єдиний коректний спосіб використання —
+            передати назад рівно те значення, яке прийшло у попередній відповіді.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 512
+      responses:
+        '200':
+          description: Сторінка транзакцій
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      operationId: createTransactions
+      summary: Створити транзакції батчем
+      description: >
+        Створює одну або кілька транзакцій за один запит — ручний ввід, імпорт виписки або переказ
+        між власними рахунками (`transfer_out` + `transfer_in` двома елементами).
+        Батч застосовується атомарно: або створюються всі записи з `entries`, або жодного.
+        Баланси відповідних рахунків перераховуються в тій самій операції.
+      tags: [transactions]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: >
+            Ключ безпечного повтору. Той самий ключ із тим самим тілом повертає ту саму відповідь —
+            той самий `201` і той самий набір транзакцій, плюс заголовок `Idempotency-Replay: true`;
+            обробник не виконується вдруге й нових записів не зʼявляється. Той самий ключ з іншим
+            тілом — `422`, бо ключ уже витрачено на іншу операцію. Запит, що саме виконується, —
+            `409`. Ключ живе 24 години, після чого той самий рядок можна використати як новий.
+            Стандарту на цей заголовок немає: IETF-draft `draft-ietf-httpapi-idempotency-key-header`
+            зупинився на ревізії -07 і прострочений, тож семантика описана тут явно й слідує Stripe.
+          schema:
+            type: string
+            minLength: 8
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTransactionsRequest'
+      responses:
+        '201':
+          description: Транзакції створено
+          headers:
+            Idempotency-Replay:
+              description: >
+                Присутній зі значенням `true`, якщо це відтворена відповідь на повторний запит із тим
+                самим `Idempotency-Key` і тим самим тілом. Нових транзакцій при цьому не створено.
+              required: false
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionBatch'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /transactions/{transaction_id}:
+    get:
+      operationId: getTransaction
+      summary: Отримати транзакцію
+      tags: [transactions]
+      parameters:
+        - name: transaction_id
+          in: path
+          required: true
+          description: Ідентифікатор транзакції.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Транзакція
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  responses:
+    BadRequest:
+      description: Запит не пройшов валідацію проти цієї спеки
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+    NotFound:
+      description: Ресурс не знайдено
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+    Conflict:
+      description: Конфлікт зі станом ресурсу — наприклад, запит із цим Idempotency-Key ще виконується
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+    Unprocessable:
+      description: Тіло синтаксично коректне, але суперечить стану — наприклад, реюз Idempotency-Key
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+    InternalError:
+      description: Внутрішня помилка сервера
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+  schemas:
+    Problem:
+      type: object
+      description: |
+        Єдиний формат помилки — RFC 9457 (`application/problem+json`).
+        Пʼять базових полів обовʼязкові завжди; `code` і `errors` — розширення цього API.
+      required: [type, title, status, detail, instance]
+      properties:
+        type:
+          type: string
+          format: uri
+          description: URI типу помилки — стабільний ідентифікатор, за яким клієнт розрізняє випадки.
+          example: https://api.invest.example/problems/idempotency-key-reuse
+        title:
+          type: string
+          description: Коротка людиночитна назва типу помилки, однакова для всіх випадків цього типу.
+          example: Тіло не пройшло перевірку
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+          description: HTTP-код, продубльований у тілі — щоб проблема лишалась самодостатньою в логах.
+          example: 422
+        detail:
+          type: string
+          description: Що саме пішло не так у цьому конкретному випадку.
+          example: Idempotency-Key вже використано з іншим тілом запиту
+        instance:
+          type: string
+          description: Посилання на конкретний випадок — URI запиту, який спричинив помилку.
+          example: /transactions
+        code:
+          type: string
+          description: Машиночитний код помилки — розширення API поверх RFC 9457.
+          example: idempotency-key-reuse
+        errors:
+          type: array
+          description: Деталізація по полях, коли помилок валідації кілька.
+          items:
+            type: object
+            required: [path, message]
+            properties:
+              path:
+                type: string
+                example: /body/entries
+              message:
+                type: string
+                example: must NOT have fewer than 1 items
+
+    Account:
+      type: object
+      description: Рахунок будь-якого типу — від готівкового гаманця до обʼєкта нерухомості.
+      required: [id, name, type, currency, balance_cents, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+          example: Брокерський IBKR
+        type:
+          $ref: '#/components/schemas/AccountType'
+        currency:
+          $ref: '#/components/schemas/Currency'
+        balance_cents:
+          type: integer
+          format: int64
+          description: >
+            Поточний баланс у копійках/центах валюти рахунку. Для `property` — оцінна вартість.
+            Ціле число: гроші ніколи не float.
+          example: 1250000
+        created_at:
+          type: string
+          format: date-time
+
+    AccountCreate:
+      type: object
+      additionalProperties: false
+      required: [name, type, currency]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+          example: Брокерський IBKR
+        type:
+          $ref: '#/components/schemas/AccountType'
+        currency:
+          $ref: '#/components/schemas/Currency'
+        opening_balance_cents:
+          type: integer
+          format: int64
+          default: 0
+          description: Початковий баланс у копійках/центах. Ціле число.
+          example: 1250000
+
+    AccountType:
+      type: string
+      description: |
+        Тип рахунку. Інвестиції — не окрема підсистема, а значення цього enum:
+        `brokerage` тримає цінні папери, `property` — нерухомість.
+      enum: [cash, bank, brokerage, property]
+      example: brokerage
+
+    TransactionType:
+      type: string
+      description: |
+        Тип транзакції. Він же задає напрямок руху коштів, тому `amount_cents` завжди невідʼємне:
+
+        - надходження — `income`, `transfer_in`, `sell`
+        - списання — `expense`, `transfer_out`, `buy`
+
+        Переказ між власними рахунками — це дві транзакції (`transfer_out` і `transfer_in`)
+        в одному батчі, який застосовується атомарно.
+
+        `buy` і `sell` стосуються рахунків типу `brokerage` і заповнюють
+        `instrument_symbol` та `quantity_micro`.
+      enum: [income, expense, transfer_in, transfer_out, buy, sell]
+      example: buy
+
+    Currency:
+      type: string
+      description: Валюта, ISO 4217, три великі літери.
+      pattern: '^[A-Z]{3}$'
+      example: UAH
+
+    Transaction:
+      type: object
+      description: >
+        Одна операція за рахунком. Знак руху коштів визначає `type`, а не знак `amount_cents`:
+        `amount_cents` завжди невідʼємне.
+      required:
+        - id
+        - account_id
+        - type
+        - amount_cents
+        - currency
+        - occurred_at
+        - description
+        - instrument_symbol
+        - quantity_micro
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        account_id:
+          type: string
+          format: uuid
+        type:
+          $ref: '#/components/schemas/TransactionType'
+        amount_cents:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Сума в копійках/центах, завжди невідʼємна. Ціле число.
+          example: 4599
+        currency:
+          $ref: '#/components/schemas/Currency'
+        occurred_at:
+          type: string
+          format: date-time
+          description: Коли операція сталася в реальному світі — на відміну від `created_at`.
+        description:
+          type: string
+          maxLength: 500
+          nullable: true
+          description: Довільний коментар користувача. `null`, якщо не заданий.
+          example: Купівля 10 акцій VOO
+        instrument_symbol:
+          type: string
+          maxLength: 20
+          nullable: true
+          description: Тікер інструменту для `buy`/`sell`. `null` для решти типів.
+          example: VOO
+        quantity_micro:
+          type: integer
+          format: int64
+          nullable: true
+          description: >
+            Кількість інструменту, помножена на 10^6 — щоб дробові акції лишались цілим числом.
+            10 акцій = `10000000`. `null` для не-інвестиційних типів.
+          example: 10000000
+        created_at:
+          type: string
+          format: date-time
+
+    TransactionEntry:
+      type: object
+      description: Один елемент батчу на створення транзакцій.
+      additionalProperties: false
+      required: [account_id, type, amount_cents, currency, occurred_at]
+      properties:
+        account_id:
+          type: string
+          format: uuid
+        type:
+          $ref: '#/components/schemas/TransactionType'
+        amount_cents:
+          type: integer
+          format: int64
+          minimum: 0
+          example: 4599
+        currency:
+          $ref: '#/components/schemas/Currency'
+        occurred_at:
+          type: string
+          format: date-time
+        description:
+          type: string
+          maxLength: 500
+          nullable: true
+        instrument_symbol:
+          type: string
+          maxLength: 20
+          nullable: true
+        quantity_micro:
+          type: integer
+          format: int64
+          nullable: true
+
+    CreateTransactionsRequest:
+      type: object
+      additionalProperties: false
+      required: [entries]
+      properties:
+        entries:
+          type: array
+          description: Непорожній список транзакцій, які створюються атомарно.
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/TransactionEntry'
+
+    TransactionBatch:
+      type: object
+      description: Результат батчу — створені транзакції в тому ж порядку, що й `entries`.
+      required: [transactions]
+      properties:
+        transactions:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/Transaction'
+
+    AccountPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Account'
+        next_cursor:
+          type: string
+          nullable: true
+          description: >
+            Непрозорий токен наступної сторінки. `null` означає, що сторінок більше немає —
+            клієнт не рахує сторінки й не звіряє довжину `items` з `limit`.
+          example: eyJjIjoiMjAyNi0wOC0yNVQxMDowMDowMFoiLCJpZCI6IjllOWMifQ
+
+    TransactionPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Transaction'
+        next_cursor:
+          type: string
+          nullable: true
+          description: >
+            Непрозорий токен наступної сторінки. `null` означає, що сторінок більше немає —
+            клієнт не рахує сторінки й не звіряє довжину `items` з `limit`.
+          example: eyJjIjoiMjAyNi0wOC0yNVQxMDowMDowMFoiLCJpZCI6IjllOWMifQ
