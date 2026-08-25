@@ -8,6 +8,8 @@
     "start": "nest start",
     "start:dev": "nest start --watch",
     "build": "nest build",
+    "test": "jest",
+    "test:watch": "jest --watch",
     "lint:spec": "redocly lint openapi/openapi.yaml",
     "bundle:spec": "redocly bundle openapi/openapi.yaml -o spec.json",
     "check:spec": "npm run lint:spec && npm run bundle:spec && node scripts/check-spec.js"
@@ -31,9 +33,13 @@
   },
   "devDependencies": {
     "@nestjs/cli": "^10.4.9",
+    "@nestjs/testing": "^10.4.15",
     "@redocly/cli": "^2.46.0",
     "@types/express": "^4.17.21",
+    "@types/jest": "^29.5.14",
     "@types/node": "^22.10.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
     "typescript": "^5.7.2"
   }
 }
