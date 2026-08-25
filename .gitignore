@@ -1,0 +1,7 @@
+node_modules/
+spec.json
+.env
+.env.local
+.idea/
+.DS_Store
+*.log
