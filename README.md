@@ -352,3 +352,4 @@ Content-Type: application/problem+json; charset=utf-8
 - Pact — це варіант А; консюмер-контракт іде в ДЗ #16, де лекція прямо каже «верифікує
   OpenAPI-spec з ДЗ #9».
 - БД — сховище in-memory, як дозволяє умова; схема проєктується в ДЗ #12.
+# invest-api
