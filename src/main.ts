@@ -1,50 +1,10 @@
 import 'reflect-metadata';
 import './register-aliases';
-import { join } from 'node:path';
-import { ValidationPipe } from '@nestjs/common';
-import { NestFactory } from '@nestjs/core';
-import { ExpressAdapter } from '@nestjs/platform-express';
-import express, { NextFunction, Request, Response } from 'express';
-import * as OpenApiValidator from 'express-openapi-validator';
-import { AppModule } from '@/app.module';
-import { sendProblem } from '@/shared/problem.format';
+import { createApp } from '@/create-app';
 import { setupSwagger } from '@/shared/swagger';
 
 async function bootstrap(): Promise<void> {
-  const server = express();
-  server.use(express.json());
-  server.use(
-    OpenApiValidator.middleware({
-      apiSpec: join(__dirname, '..', 'openapi', 'openapi.yaml'),
-      validateRequests: true,
-      validateResponses: true,
-      ignorePaths: /^\/docs/,
-    }),
-  );
-
-  const app = await NestFactory.create(AppModule, new ExpressAdapter(server), {
-    bodyParser: false,
-  });
-
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      forbidNonWhitelisted: true,
-      transform: true,
-      transformOptions: {
-        enableImplicitConversion: true,
-        exposeDefaultValues: true,
-      },
-    }),
-  );
-
-  server.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
-    if (res.headersSent) {
-      next(err);
-      return;
-    }
-    sendProblem(err, req, res);
-  });
+  const app = await createApp();
 
   const port = Number(process.env.PORT ?? 3000);
   setupSwagger(app, port);
