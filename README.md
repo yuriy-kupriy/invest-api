@@ -53,7 +53,24 @@ npm start          # http://localhost:3000 · Swagger UI: /docs · UK: /docs/uk
 | `src/transactions/` | NestJS controller / service / in-memory repository транзакцій |
 | `src/shared/` | пагінація, мапери (`DRIFT`), idempotency, problem+json |
 | `src/domain/` | типи `Account` / `Transaction` |
+| `src/create-app.ts` | збірка Nest-застосунку (валідатор, pipes, error-handler) — спільна для `main.ts` і e2e-тестів |
+| `test/app.e2e-spec.ts` | e2e: той самий пайплайн, що й `npm start`, без реального `listen()` |
 | `scripts/check-spec.js` | перевірка обсягу спеки — той самий скрипт, що в acceptance criteria |
+
+---
+
+## Тести
+
+```bash
+npm test          # юніт: контролери/сервіси з мокнутим репозиторієм — 17 тестів
+npm run test:e2e  # e2e: реальний пайплайн (validateRequests/Responses, Idempotency-Key,
+                   # problem+json) через supertest, без мережевого порту — 7 тестів
+```
+
+Юніт-специ лежать поруч із кодом (`src/**/*.spec.ts`) — стандартна Nest CLI-конвенція.
+E2e — окремо в `test/`, зі своїм `test/jest-e2e.json`, теж за замовчуванням Nest CLI: e2e
+піднімає ціле дерево модулів разом із raw-Express шаром (`OpenApiValidator`, error-handler),
+який юніт-тести контролерів навмисно обходять моком сервісу.
 
 ---
 
