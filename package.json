@@ -3,9 +3,14 @@
   "version": "1.0.0",
   "private": true,
   "description": "Курсовий проєкт: Money Manager з детальним трекінгом інвестицій. ДЗ #9 — OpenAPI-спека + runtime-валідація на кордоні.",
-  "main": "src/server.js",
+  "main": "dist/main.js",
   "scripts": {
-    "start": "node src/server.js",
+    "start": "nest start",
+    "start:dev": "nest start --watch",
+    "build": "nest build",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:e2e": "jest --config ./test/jest-e2e.json",
     "lint:spec": "redocly lint openapi/openapi.yaml",
     "bundle:spec": "redocly bundle openapi/openapi.yaml -o spec.json",
     "check:spec": "npm run lint:spec && npm run bundle:spec && node scripts/check-spec.js"
@@ -14,10 +19,30 @@
     "node": ">=18"
   },
   "dependencies": {
+    "@nestjs/common": "^10.4.15",
+    "@nestjs/core": "^10.4.15",
+    "@nestjs/platform-express": "^10.4.15",
+    "@nestjs/swagger": "^7.4.2",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.15.1",
     "express": "^4.22.2",
-    "express-openapi-validator": "^5.6.2"
+    "express-openapi-validator": "^5.6.2",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1",
+    "swagger-ui-express": "^5.0.1",
+    "tsconfig-paths": "^4.2.0"
   },
   "devDependencies": {
-    "@redocly/cli": "^2.46.0"
+    "@nestjs/cli": "^10.4.9",
+    "@nestjs/testing": "^10.4.15",
+    "@redocly/cli": "^2.46.0",
+    "@types/express": "^4.17.21",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.10.0",
+    "@types/supertest": "^6.0.2",
+    "jest": "^29.7.0",
+    "supertest": "^7.0.0",
+    "ts-jest": "^29.2.5",
+    "typescript": "^5.7.2"
   }
 }

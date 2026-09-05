@@ -29,7 +29,7 @@
 
 ```bash
 npm install
-npm start          # http://localhost:3000
+npm start          # http://localhost:3000 · Swagger UI: /docs · UK: /docs/uk
 ```
 
 Даних у БД немає — сховище in-memory, сідується трьома рахунками й двома транзакціями на старті.
@@ -47,10 +47,30 @@ npm start          # http://localhost:3000
 | Шлях | Призначення |
 |---|---|
 | `openapi/openapi.yaml` | **спека — джерело правди**: 2 ресурси, 6 операцій, cursor-пагінація, Idempotency-Key, problem+json |
-| `src/app.js` | Express-застосунок: валідатор, 6 роутів, error-handler у problem+json |
-| `src/idempotency.js` | in-memory store ключів ідемпотентності + middleware |
-| `src/server.js` | точка входу `npm start` |
+| `src/main.ts` | точка входу: Express adapter, OpenAPI-валідатор, Swagger `/docs` і `/docs-json`, error-handler у problem+json |
+| `src/app.module.ts` | корінь: feature-модулі, Idempotency-Key middleware, глобальний exception filter |
+| `src/accounts/` | NestJS controller / service / in-memory repository рахунків |
+| `src/transactions/` | NestJS controller / service / in-memory repository транзакцій |
+| `src/shared/` | пагінація, мапери (`DRIFT`), idempotency, problem+json |
+| `src/domain/` | типи `Account` / `Transaction` |
+| `src/create-app.ts` | збірка Nest-застосунку (валідатор, pipes, error-handler) — спільна для `main.ts` і e2e-тестів |
+| `test/app.e2e-spec.ts` | e2e: той самий пайплайн, що й `npm start`, без реального `listen()` |
 | `scripts/check-spec.js` | перевірка обсягу спеки — той самий скрипт, що в acceptance criteria |
+
+---
+
+## Тести
+
+```bash
+npm test          # юніт: контролери/сервіси з мокнутим репозиторієм — 17 тестів
+npm run test:e2e  # e2e: реальний пайплайн (validateRequests/Responses, Idempotency-Key,
+                   # problem+json) через supertest, без мережевого порту — 7 тестів
+```
+
+Юніт-специ лежать поруч із кодом (`src/**/*.spec.ts`) — стандартна Nest CLI-конвенція.
+E2e — окремо в `test/`, зі своїм `test/jest-e2e.json`, теж за замовчуванням Nest CLI: e2e
+піднімає ціле дерево модулів разом із raw-Express шаром (`OpenApiValidator`, error-handler),
+який юніт-тести контролерів навмисно обходять моком сервісу.
 
 ---
 
@@ -71,7 +91,7 @@ npm start          # http://localhost:3000
 
 **Гроші — цілі копійки.** `amount_cents`, `balance_cents` — `integer`/`int64`. Ніяких float і ніяких
 рядків-decimal `"2600.00"`: це біль v1 з лекції, і повторювати його у власній v1 немає сенсу.
-Валюта завжди окремим явним полем (`^[A-Z]{3}$`).
+Валюта завжди окремим явним полем — enum `UAH` / `USD` / `EUR`.
 
 **Кількість інструменту — `quantity_micro`**, ціле число × 10⁶. Дробові акції (10.5 шт = `10500000`)
 теж не стають float.
@@ -121,7 +141,7 @@ npm start          # http://localhost:3000
 
 ## Пункт 5: хто звіряє
 
-Спека сама по собі нічого не примушує. Примушує ось це, у `src/app.js`:
+Спека сама по собі нічого не примушує. Примушує ось це, у `src/main.ts`:
 
 ```js
 OpenApiValidator.middleware({
@@ -140,9 +160,9 @@ OpenApiValidator.middleware({
 ```
 express.json()
   → OpenApiValidator.middleware()   ← валідація запиту
-  → idempotency                     ← після неї: ключ не резервується під тіло, яке спека відхилила
-  → роути
-  → error handler → problem+json
+  → IdempotencyMiddleware           ← після неї: ключ не резервується під тіло, яке спека відхилила
+  → NestJS controller → service → in-memory repository
+  → exception filter / Express error handler → problem+json
 ```
 
 Error-handler віддає помилку через `res.type('application/problem+json').send(JSON.stringify(body))`,
