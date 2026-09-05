@@ -1,0 +1,25 @@
+# Secrets never reach an image layer — neither the values nor the files
+.env
+.env.local
+.env.*.local
+secrets/
+
+# Build output and local noise: dist is built inside the image
+node_modules
+dist
+coverage
+spec.json
+.git
+.gitignore
+.idea
+.DS_Store
+*.log
+
+# Infrastructure that has no business being in the image
+Dockerfile
+.dockerignore
+docker-compose.yml
+rotate.sh
+db
+test
+README.md

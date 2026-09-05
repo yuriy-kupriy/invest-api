@@ -18,7 +18,7 @@
 | `Account` | `type` | `cash`, `bank`, `brokerage`, `property` |
 | `Transaction` | `type` | `income`, `expense`, `transfer_in`, `transfer_out`, `buy`, `sell` |
 
-Брокерський рахунок — це `account.type = brokerage`, купівля паперів — `transaction.type = buy`
+A brokerage account is `account.type = brokerage`; buying securities is `transaction.type = buy`
 з заповненими `instrument_symbol` і `quantity_micro`. Нерухомість — `account.type = property`.
 Переказ між власними рахунками — дві транзакції (`transfer_out` + `transfer_in`) в **одному
 атомарному батчі**; саме тому операція створення транзакцій приймає масив, а не один запис.
@@ -34,11 +34,11 @@ npm start          # http://localhost:3000 · Swagger UI: /docs · UK: /docs/uk
 
 Даних у БД немає — сховище in-memory, сідується трьома рахунками й двома транзакціями на старті.
 
-| Рахунок | id | Валюта |
+| Account | id | Currency |
 |---|---|---|
-| Готівка UAH (`cash`) | `11111111-1111-4111-8111-111111111111` | UAH |
-| Брокерський IBKR (`brokerage`) | `22222222-2222-4222-8222-222222222222` | USD |
-| Квартира на Печерську (`property`) | `33333333-3333-4333-8333-333333333333` | USD |
+| Cash UAH (`cash`) | `11111111-1111-4111-8111-111111111111` | UAH |
+| IBKR brokerage (`brokerage`) | `22222222-2222-4222-8222-222222222222` | USD |
+| Apartment in Pechersk (`property`) | `33333333-3333-4333-8333-333333333333` | USD |
 
 ---
 
@@ -371,5 +371,160 @@ Content-Type: application/problem+json; charset=utf-8
 - Автентифікація — ДЗ #24, зараз `security: []`.
 - Pact — це варіант А; консюмер-контракт іде в ДЗ #16, де лекція прямо каже «верифікує
   OpenAPI-spec з ДЗ #9».
-- БД — сховище in-memory, як дозволяє умова; схема проєктується в ДЗ #12.
-# invest-api
+- БД — доменне сховище лишається in-memory; Postgres підключений як керований ресурс
+  (пул + `/health/db`) заради ДЗ #2 курсового, доменна схема проєктується в ДЗ #12.
+
+---
+
+
+# ДЗ #2 курсового: Configuration
+
+Другий крок курсового: конфігурація перестає бути «читаємо `process.env` де захочеться».
+Замикаються два ланцюги —
+
+```
+process.env → zod-схема (fail-fast) → ConfigService<Env, true> → код
+secrets/db_password → password: () => readFile() → pg.Pool → Postgres
+```
+
+— і другий доводиться **ротацією пароля БД без рестарту сервісу**.
+
+## Змінні середовища
+
+Джерело правди — [`src/config/env.schema.ts`](src/config/env.schema.ts). Контракт для людей —
+[`.env.example`](.env.example) (у git, зі фейковими значеннями). Реальний `.env` — у `.gitignore`
+і в `.dockerignore`.
+
+| Змінна | Обовʼязкова | Дефолт | Тип у схемі | Призначення |
+|---|---|---|---|---|
+| `NODE_ENV` | ні | `development` | `enum(development, test, production)` | режим роботи |
+| `PORT` | ні | `3000` | `coerce.number().int()` 1…65535 | порт HTTP |
+| `DB_URL` | **так** | — | `url()`, лише `postgres://`, **без пароля** | хост/порт/користувач/база |
+| `DB_PASSWORD_FILE` | ні | `./secrets/db_password` | непорожній рядок | шлях до файла-секрета |
+| `DB_POOL_MAX` | ні | `10` | `coerce.number().int()` 1…50 | розмір пулу `pg` |
+| `DB_CONNECT_TIMEOUT_MS` | ні | `5000` | `coerce.number().int()` ≥100 | таймаут конекту |
+| `DRIFT` | ні | `0` | `enum('0','1')` | навмисний дрейф мапера з ДЗ #9 |
+
+Три речі, які тут не випадкові:
+
+- **`z.coerce.number()`, а не `z.number()`** — з середовища все приходить рядком.
+- **`DRIFT` — це `enum('0','1')`, а не boolean**: `Boolean('0') === true`, тож `coerce.boolean()`
+  тихо вмикав би прапорець назавжди.
+- **`DB_URL` не містить пароля** — схема це прямо перевіряє (`refine`). Пароль — секрет, він живе
+  у файлі, який перечитується на кожне нове зʼєднання.
+
+Валідація підключена в [`app.module.ts`](src/app.module.ts) першим імпортом:
+
+```ts
+ConfigModule.forRoot({ isGlobal: true, cache: true, envFilePath: ['.env'], validate: validateEnv })
+```
+
+`validate` викликається **до** побудови DI-графа, тож [`env.validation.ts`](src/config/env.validation.ts)
+робить один `safeParse` і кидає помилку зі списком **усіх** зламаних змінних одразу, а не по одній.
+У коді немає жодного `process.env` поза схемою — перевіряється як `grep -rn 'process\.env' src`.
+
+## Як запустити
+
+```bash
+npm install
+cp .env.example .env          # і за потреби поправити значення
+npm run db:up                 # Postgres у docker compose
+npm run secrets:init          # кладе стартовий пароль у secrets/db_password
+npm start                     # build + node dist/main.js
+```
+
+`start` навмисно **не** watch-режим: `nest start --watch` не завершується й не віддає exit code,
+тож на ньому не перевірити fail-fast. Watch живе окремо — `npm run start:dev`.
+
+Про порти: compose віддає Postgres на **5433** (`POSTGRES_HOST_PORT` перевизначає), бо 5432 на хості
+часто зайнятий локально встановленим сервером — тому `DB_URL` у `.env.example` вказує саме на 5433.
+Порт застосунку так само конфігурований: `PORT=3100 npm start`.
+
+Корисне поруч:
+
+| Команда | Що робить |
+|---|---|
+| `npm run check:env` | звіряє `.env.example` зі схемою, `exit 1` якщо файл відстав |
+| `npm run check:spec` | перевірки ДЗ #9: lint + bundle + обсяг спеки |
+| `npm run db:up` / `npm run db:down` | підняти / знести Postgres (`down -v` стирає том!) |
+| `npm run secrets:init` | створити файл-секрет зі стартовим паролем |
+| `npm run rotate` | ротація пароля БД без рестарту |
+
+Health-ендпоїнти (обидва описані у спеці, тож ідуть через той самий response-валідатор):
+
+| Ендпоїнт | Що показує |
+|---|---|
+| `GET /health` | `uptime_seconds` процесу, версія, `node_env`. БД **не** чіпає |
+| `GET /health/db` | справжній запит до Postgres: `latency_ms`, `now`, `probe_rows`, стан пулу |
+
+## Ротація пароля БД без рестарту
+
+Пароль ніколи не буває змінною середовища. Пул створюється у [`db.module.ts`](src/db/db.module.ts)
+з паролем-**функцією**:
+
+```ts
+password: async () => (await readFile(absolutePath, 'utf8')).trim(),
+```
+
+`pg` викликає її на **кожне нове зʼєднання** — саме тому оновлення файла достатньо, щоб новий
+пароль поїхав у справу без перезапуску процесу.
+
+```bash
+curl -s localhost:3000/health | jq .uptime_seconds     # запамʼятати
+npm run rotate                                          # або: bash rotate.sh
+curl -s localhost:3000/health/db | jq .                 # 200 — пул автентифікувався заново
+curl -s localhost:3000/health | jq .uptime_seconds     # більше за попереднє → рестарту не було
+```
+
+Що робить [`rotate.sh`](rotate.sh) і чому саме в такому порядку:
+
+1. `ALTER ROLE invest_app WITH PASSWORD …` — нове значення дійсне в БД;
+2. **одразу** запис у `secrets/db_password` через тимчасовий файл + `mv` (підміна атомарна, паралельне
+   зʼєднання не прочитає напівзаписаний пароль). Вікно між (1) і (2) — єдине, коли нове зʼєднання
+   взяло б старий пароль; нульове вікно дають alternating users (AWS rotation strategies), тут
+   свідомо простіша однокористувацька схема;
+3. `pg_terminate_backend` для решти зʼєднань ролі — старі клієнти рвуться, пул відкриває нові вже
+   з новим паролем.
+
+Після кроку 3 пул емітить `'error'` на вбитих клієнтах. Обробник `pool.on('error', …)` у
+`db.module.ts` **обовʼязковий**: без нього це unhandled `'error'` і процес падає — це не баг
+ротації, це відсутній обробник.
+
+**Пастка `docker compose down -v`.** Том стирається, Postgres переінʼється з `db/init.sql` і
+повертається до стартового пароля, а `secrets/db_password` лишається з ротованим — далі
+`password authentication failed`. Лікується так:
+
+```bash
+FORCE=1 npm run secrets:init
+```
+
+## Секрети поза git і поза образом
+
+- `.gitignore` — `.env` і вся тека `secrets/`; у git лежить лише `.env.example`.
+- [`.dockerignore`](.dockerignore) — `.env*`, `secrets/`, `node_modules`, `dist`, `.git`, `.idea`.
+- [`Dockerfile`](Dockerfile) — single-stage, **без жодної інструкції `ENV`**: усе, що покаже
+  `docker inspect --format '{{.Config.Env}}'`, належить базовому образу. Конфіг приходить у
+  рантаймі (`--env-file`), секрет — томом.
+
+```bash
+docker build -t myapp .
+docker run --rm myapp ls -a /app                        # є .env.example, немає .env і secrets/
+docker run --rm myapp sh -c 'cat /app/.env' 2>&1        # No such file or directory
+docker inspect --format '{{.Config.Env}}' myapp          # лише PATH, NODE_VERSION, YARN_VERSION
+docker history --no-trunc myapp | grep -i password      # порожньо
+```
+
+## Структура ДЗ #2
+
+| Шлях | Призначення |
+|---|---|
+| `src/config/env.schema.ts` | zod-схема — єдине джерело правди про змінні |
+| `src/config/env.validation.ts` | `validate` для `ConfigModule`: усі помилки одним списком |
+| `src/db/db.module.ts` | `pg.Pool` з паролем-функцією + `pool.on('error')` |
+| `src/health/` | `/health` (uptime) і `/health/db` (реальний запит у БД) |
+| `.env.example` | контракт змінних у git, значення фейкові |
+| `scripts/check-env-example.mjs` | звірка `.env.example` зі схемою (`npm run check:env`) |
+| `scripts/init-secret.sh` | стартовий пароль у `secrets/db_password` |
+| `rotate.sh` | ротація: ALTER ROLE → файл → `pg_terminate_backend` |
+| `docker-compose.yml`, `db/init.sql` | Postgres, роль `invest_app`, таблиця `health_probe` |
+| `Dockerfile`, `.dockerignore` | образ без секретів і без власних `ENV` |

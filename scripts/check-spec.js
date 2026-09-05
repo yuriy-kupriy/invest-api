@@ -1,6 +1,7 @@
-// Перевірка обсягу спеки — та сама, що в acceptance criteria ДЗ, лише винесена у файл.
-// Читає збандлену spec.json, а не yaml: критерій дивиться на operation-level parameters
-// після бандлу, і саме тому Idempotency-Key описаний у спеці inline, а не через $ref.
+// Checks the spec scope: the same test as in the homework acceptance criteria,
+// just extracted to a file. Reads the bundled spec.json, not the yaml: the criterion
+// looks at operation-level parameters after bundling, which is why Idempotency-Key
+// is described inline in the spec, not via $ref.
 const s = require('../spec.json');
 
 const METHODS = ['get', 'post', 'put', 'patch', 'delete'];
@@ -19,17 +20,17 @@ const idem = ops
 
 const idemDescLength = (idem?.description ?? '').trim().length;
 
-console.log('операцій:', ops.length, '· ресурсів:', resources);
-console.log('Idempotency-Key: required =', idem?.required, '· опис, символів =', idemDescLength);
+console.log('operations:', ops.length, '· resources:', resources);
+console.log('Idempotency-Key: required =', idem?.required, '· description length =', idemDescLength);
 
 const failures = [];
-if (ops.length < 5) failures.push(`операцій ${ops.length}, треба ≥ 5`);
-if (resources < 2) failures.push(`ресурсів ${resources}, треба ≥ 2`);
-if (idem?.required !== true) failures.push('Idempotency-Key не required: true');
-if (idemDescLength < 40) failures.push(`опис Idempotency-Key ${idemDescLength} символів, треба ≥ 40`);
+if (ops.length < 5) failures.push(`operations ${ops.length}, need ≥ 5`);
+if (resources < 2) failures.push(`resources ${resources}, need ≥ 2`);
+if (idem?.required !== true) failures.push('Idempotency-Key not required: true');
+if (idemDescLength < 40) failures.push(`Idempotency-Key description ${idemDescLength} chars, need ≥ 40`);
 
 if (failures.length > 0) {
-  console.error('\nПРОВАЛЕНО:\n- ' + failures.join('\n- '));
+  console.error('\nFAILED:\n- ' + failures.join('\n- '));
   process.exit(1);
 }
-console.log('\nОбсяг спеки витримано.');
+console.log('\nSpec scope looks good.');

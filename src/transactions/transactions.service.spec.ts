@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { HttpStatus } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { AccountsRepository } from '@/accounts/accounts.repository';
 import { Account } from '@/domain/account';
 import { Currency } from '@/domain/currency';
@@ -56,6 +57,12 @@ describe('TransactionsService', () => {
             updateBalance: jest.fn(),
             has: jest.fn(),
           },
+        },
+        {
+          // The service only asks the config for DRIFT; snake_case wire format
+          // is the default, so the stub answers '0'.
+          provide: ConfigService,
+          useValue: { get: jest.fn(() => '0') },
         },
       ],
     }).compile();

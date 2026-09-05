@@ -50,7 +50,7 @@ export class IdempotencyMiddleware implements NestMiddleware {
           problem(
             HttpStatus.UNPROCESSABLE_ENTITY,
             'idempotency-key-reuse',
-            'Idempotency-Key уже використано з іншим тілом запиту — один ключ належить одній операції',
+            'This Idempotency-Key was already used with a different request body — one key belongs to one operation',
           ),
         );
         return;
@@ -60,7 +60,7 @@ export class IdempotencyMiddleware implements NestMiddleware {
           problem(
             HttpStatus.CONFLICT,
             'idempotency-in-flight',
-            'Запит із цим Idempotency-Key ще виконується — повторіть спробу згодом',
+            'A request with this Idempotency-Key is still in flight — retry in a moment',
           ),
         );
         return;
