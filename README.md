@@ -890,18 +890,44 @@ SELECT (SELECT count(*) FROM currency) || ',' || (SELECT count(*) FROM users) ||
 детальні ендпоінти). `QueryBuilder` — щойно результат перестає бути entity: агрегати,
 `GROUP BY`, віконні функції, ручні підзапити чи часткові проєкції, які `find()` виразити не може.
 
-## TypeORM у застосунку (опційно)
+## TypeORM у застосунку
 
-`AccountsRepository`/`TransactionsRepository` — ті самі абстрактні класи з ДЗ #9
-([`src/accounts/accounts.repository.ts`](src/accounts/accounts.repository.ts),
-[`src/transactions/transactions.repository.ts`](src/transactions/transactions.repository.ts)),
-тепер асинхронні. За замовчуванням Nest використовує in-memory реалізацію (щоб `npm start` і
-`npm test` не потребували живого Postgres) — `DB_BACKEND=typeorm` перемикає DI-провайдер на
-[`TypeOrmAccountsRepository`](src/accounts/typeorm-accounts.repository.ts) /
-[`TypeOrmTransactionsRepository`](src/transactions/typeorm-transactions.repository.ts), які
-мапають entity на доменні типи ДЗ #9. Домен цього ДЗ не має понять `user_id` чи знімка
-`fx_rate`, тож обидва репозиторії підставляють задокументовані заглушки (фіксований
-system-user, плейсхолдер-курс) — позначено коментарями в коді.
+[`AccountsRepository`](src/accounts/accounts.repository.ts)/
+[`TransactionsRepository`](src/transactions/transactions.repository.ts) — конкретні,
+асинхронні класи, що напряму інжектують `Repository<T>` з TypeORM (`@InjectRepository`) і
+мапають entity на доменні типи ДЗ #9. Раніше це були in-memory реалізації за окремим
+абстрактним класом плюс паралельна `TypeOrm*Repository` під прапорцем `DB_BACKEND` — тепер
+абстракції немає: клас, що інжектується в сервіс, і є TypeORM-реалізацією, `AccountsModule`/
+`TransactionsModule` просто реєструють його як звичайний провайдер. Домен ДЗ #9 не має понять
+`user_id` чи знімка `fx_rate`, тож обидва репозиторії підставляють задокументовані заглушки
+(фіксований system-user, плейсхолдер-курс) — позначено коментарями в коді.
+
+Наслідок: `npm start` і `npm run start:dev` тепер потребують живого, промігрованого Postgres
+(`docker compose up -d --wait` → `npm run build` → `npm run migrate`). `npm test` (юніт-специ)
+цього не потребує — вони мокають клас `AccountsRepository`/`TransactionsRepository` як
+DI-токен напряму (Nest дозволяє клас-токен без окремого інтерфейсу), жодного модуля Nest не
+піднімаючи.
+
+### Опційні фікстури для локального запуску без повного seed
+
+[`db/dev-fixtures.sql`](db/dev-fixtures.sql) — три рахунки й дві транзакції, з тими самими id,
+що їх раніше на кожному старті сама вигадувала in-memory реалізація. Файл ідемпотентний
+(`ON CONFLICT DO NOTHING`) і призначений для запуску одразу після міграції, коли повний
+`npm run seed` не потрібен (наприклад, перед `npm run test:e2e` чи ручним `curl` по свіжій базі):
+
+```bash
+docker compose up -d --wait
+npm run build && npm run migrate
+npm run db:fixtures
+```
+
+Ані грейдер, ані `npm test` цей файл не використовують — `npm run seed` (крок нижче) дає ширший і
+самодостатній набір даних. Разом із `npm run migrate` він робить `npm run test:e2e` (не входить у
+грейдинг, але корисно локально) прогонюваним проти реальної бази без повного seed.
+
+> `@nestjs/typeorm@^11` (не `^12`, який опублікований як чистий ESM `"type": "module"` і не
+> парситься `ts-jest`-transform-ом у CJS-режимі Jest) — саме тому в `package.json` версія
+> зафіксована на останньому CJS-релізі.
 
 ## Структура ДЗ #13
 
@@ -913,5 +939,7 @@ system-user, плейсхолдер-курс) — позначено комен�
 | [`src/seed.ts`](src/seed.ts) | детермінований ідемпотентний seed |
 | [`src/demo-nplus1.ts`](src/demo-nplus1.ts) | N+1 «до/після» з лічильником SQL-запитів |
 | [`src/report.ts`](src/report.ts) | звіт через `createQueryBuilder().getRawMany()` |
+| [`src/accounts/accounts.repository.ts`](src/accounts/accounts.repository.ts), [`src/transactions/transactions.repository.ts`](src/transactions/transactions.repository.ts) | `AccountsRepository`/`TransactionsRepository` з ДЗ #9 — тепер конкретні TypeORM-класи, без абстрактного шару |
+| [`db/dev-fixtures.sql`](db/dev-fixtures.sql) | опційні фікстури: той самий набір, що раніше давала in-memory реалізація |
 | [`scripts/with-secrets.sh`](scripts/with-secrets.sh) | обгортка сховища (ДЗ #11) з `SKIP_VAULT=1` для грейдера |
 | [`.secrets/infisical.env.example`](.secrets/infisical.env.example) | шаблон логіна в сховище |

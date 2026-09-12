@@ -1,64 +1,72 @@
 import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Instrument } from '@/entities/instrument.entity';
+import { Transaction as TransactionEntity } from '@/entities/transaction.entity';
 import { Currency } from '@/domain/currency';
-import { Transaction } from '@/domain/transaction';
+import { Transaction, TransactionType } from '@/domain/transaction';
 
-export abstract class TransactionsRepository {
-  abstract findById(id: string): Promise<Transaction | undefined>;
-  abstract findAll(): Promise<Transaction[]>;
-  abstract save(transaction: Transaction): Promise<Transaction>;
+function toDomain(entity: TransactionEntity): Transaction {
+  return {
+    id: entity.id,
+    account_id: entity.accountId,
+    type: entity.type,
+    amount_cents: entity.amountCents,
+    currency: entity.currency as Currency,
+    created_at: entity.createdAt.toISOString(),
+    booked_at: entity.bookedAt.toISOString(),
+    description: entity.description,
+    quantity_micro: entity.quantityMicro,
+    instrument_symbol: entity.instrument?.symbol ?? null,
+  };
 }
 
-@Injectable()
-export class InMemoryTransactionsRepository extends TransactionsRepository {
-  private readonly transactions = new Map<string, Transaction>();
+/**
+ * The HW #9 domain snapshots no fx rate (it predates the HW #12 fx_rate
+ * table), while `transactions.fx_rate` is NOT NULL and CHECKs
+ * `(currency = 'UAH') = (fx_rate = 1)`. This is a placeholder rate for
+ * non-UAH currencies until the domain type carries a real one.
+ */
+const PLACEHOLDER_FX_RATE: Record<string, string> = { UAH: '1', USD: '41.5', EUR: '45.0' };
 
-  constructor() {
-    super();
-    this.seed();
-  }
+@Injectable()
+export class TransactionsRepository {
+  constructor(
+    @InjectRepository(TransactionEntity) private readonly repo: Repository<TransactionEntity>,
+    @InjectRepository(Instrument) private readonly instrumentsRepo: Repository<Instrument>,
+  ) {}
 
   async findById(id: string): Promise<Transaction | undefined> {
-    return this.transactions.get(id);
+    const entity = await this.repo.findOne({ where: { id }, relations: { instrument: true } });
+    return entity ? toDomain(entity) : undefined;
   }
 
   async findAll(): Promise<Transaction[]> {
-    return [...this.transactions.values()];
+    const entities = await this.repo.find({ relations: { instrument: true } });
+    return entities.map(toDomain);
   }
 
   async save(transaction: Transaction): Promise<Transaction> {
-    this.transactions.set(transaction.id, transaction);
-    return transaction;
-  }
+    const instrument = transaction.instrument_symbol
+      ? await this.instrumentsRepo.findOne({ where: { symbol: transaction.instrument_symbol } })
+      : null;
 
-  private seed(): void {
-    this.transactions.clear();
-    for (const tx of [
-      {
-        id: 'aaaaaaaa-0000-4000-8000-000000000001',
-        account_id: '11111111-1111-4111-8111-111111111111',
-        type: 'expense' as const,
-        amount_cents: 4599,
-        currency: Currency.UAH,
-        booked_at: '2026-08-20T12:30:00.000Z',
-        description: 'Coffee and breakfast',
-        instrument_symbol: null,
-        quantity_micro: null,
-        created_at: '2026-08-20T12:31:00.000Z',
-      },
-      {
-        id: 'aaaaaaaa-0000-4000-8000-000000000002',
-        account_id: '22222222-2222-4222-8222-222222222222',
-        type: 'buy' as const,
-        amount_cents: 520000,
-        currency: Currency.USD,
-        booked_at: '2026-08-21T14:00:00.000Z',
-        description: 'Bought 10 VOO shares',
-        instrument_symbol: 'VOO',
-        quantity_micro: 10000000,
-        created_at: '2026-08-21T14:00:05.000Z',
-      },
-    ]) {
-      this.transactions.set(tx.id, tx);
-    }
+    const entity = this.repo.create({
+      id: transaction.id,
+      accountId: transaction.account_id,
+      instrumentId: instrument?.id ?? null,
+      categoryId: null,
+      currency: transaction.currency,
+      type: transaction.type as TransactionType,
+      status: 'posted',
+      amountCents: transaction.amount_cents,
+      fxRate: PLACEHOLDER_FX_RATE[transaction.currency] ?? '1',
+      quantityMicro: transaction.quantity_micro,
+      unitPrice: null,
+      bookedAt: new Date(transaction.booked_at),
+      description: transaction.description,
+    });
+    await this.repo.save(entity);
+    return transaction;
   }
 }
