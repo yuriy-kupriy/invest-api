@@ -5,8 +5,11 @@ spec.json
 .env
 .env.local
 
-# Файли-секрети: пароль БД читається з secrets/db_password у рантаймі
-secrets/
+# Файли-секрети: пароль БД читається з secrets/db_password у рантаймі.
+# Ігнорується вміст теки, а не сама тека: інакше git не дав би повернути в неї
+# db_password.example — негативний патерн усередині ігнорованої теки не працює.
+secrets/*
+!secrets/db_password.example
 .idea/
 .DS_Store
 *.log
