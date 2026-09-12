@@ -3,9 +3,9 @@ import { Currency } from '@/domain/currency';
 import { Transaction } from '@/domain/transaction';
 
 export abstract class TransactionsRepository {
-  abstract findById(id: string): Transaction | undefined;
-  abstract findAll(): Transaction[];
-  abstract save(transaction: Transaction): Transaction;
+  abstract findById(id: string): Promise<Transaction | undefined>;
+  abstract findAll(): Promise<Transaction[]>;
+  abstract save(transaction: Transaction): Promise<Transaction>;
 }
 
 @Injectable()
@@ -17,15 +17,15 @@ export class InMemoryTransactionsRepository extends TransactionsRepository {
     this.seed();
   }
 
-  findById(id: string): Transaction | undefined {
+  async findById(id: string): Promise<Transaction | undefined> {
     return this.transactions.get(id);
   }
 
-  findAll(): Transaction[] {
+  async findAll(): Promise<Transaction[]> {
     return [...this.transactions.values()];
   }
 
-  save(transaction: Transaction): Transaction {
+  async save(transaction: Transaction): Promise<Transaction> {
     this.transactions.set(transaction.id, transaction);
     return transaction;
   }

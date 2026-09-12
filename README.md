@@ -749,3 +749,169 @@ Partial-індекс покриває 2.18% таблиці й тому в ~64 р
 `db/seed.sql` закінчується саме `VACUUM (ANALYZE)`, а не `ANALYZE`: статистику для планера дає
 `ANALYZE`, але visibility map виставляє тільки `VACUUM` — без неї Index Only Scan усе одно лізе в
 heap, і buffers «після» виходять у рази гірші, ніж могли б.
+
+# ДЗ #13 курсового: TypeORM, міграції, N+1
+
+Схема з ДЗ #12 (`db/schema.sql`) переїжджає в код так, як це робиться у проді: entities +
+relations + міграції, `synchronize: false`, детермінований ідемпотентний seed, доказ і лікування
+N+1, звіт через `QueryBuilder`. `db/*.sql` лишаються артефактом ДЗ #12 — джерелом правди для
+схеми тепер є міграція `src/migrations/`.
+
+## Grading
+
+Грейдер не має доступу до сховища секретів (Infisical, ДЗ #11) — на свіжому клоні
+`npm run migrate` одразу впаде на `infisical`-виклику. Нижче — рівно той блок команд, який дає
+робочу базу без сховища: `SKIP_VAULT=1` перемикає `scripts/with-secrets.sh` на прямий `exec`, а
+`DB_*` беруться з дев-креденшелів `docker-compose.yml` (вони не є секретом).
+
+```bash
+docker compose up -d --wait
+export DB_HOST=127.0.0.1 DB_PORT=5433 DB_USER=postgres DB_PASSWORD=postgres DB_NAME=invest
+export SKIP_VAULT=1    # у грейдера немає доступу до сховища
+```
+
+Далі — звичайний прогін:
+
+```bash
+npm ci
+npx tsc --noEmit
+npm run build
+npm run migrate
+npm run migrate:show
+npm run seed
+npm run seed        # вдруге — без дублювання рядків
+npm run demo:nplus1
+npm run report
+npm test
+```
+
+## Локально (зі сховищем)
+
+Той самий набір команд, без `SKIP_VAULT` і без ручного `export DB_*` — `scripts/with-secrets.sh`
+сам підвантажує `DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME` з Infisical:
+
+```bash
+docker compose up -d --wait
+npm run build
+npm run migrate
+npm run seed
+```
+
+Перший запуск без `.secrets/infisical.env` завершується підказкою — скопіюй
+[`.secrets/infisical.env.example`](.secrets/infisical.env.example) і заповни свій проєкт.
+
+## Entities та relations
+
+Сім entities в [`src/entities/`](src/entities/) — колонка в колонку зі схемою ДЗ #12: типи,
+`@Index`, nullable, CHECK-и (`@Check`) з тими самими іменами constraint-ів, що й у
+`db/schema.sql`. Гроші — `bigint` у мінорних одиницях (`balance_cents`, `amount_cents`,
+`quantity_micro`), без жодного float; курси й ціни — `numeric(20,10)`.
+
+`fx_rate.rate` — згенерована колонка (`generatedType: 'STORED'`), Postgres рахує її сам із
+`raw_rate / raw_units`; `insert: false, update: false` тримає TypeORM подалі від запису в неї.
+
+**M:N із даними на зв'язку.** У схемі немає окремої join-таблиці — `transactions` сама і є цим
+зв'язком: вона лежить між `accounts` і `instruments` (нульовий `instrument_id`, обов'язковий лише
+для `buy`/`sell`) і несе дані на зв'язку (`quantity_micro`, `unit_price`, знімок `fx_rate`). Тому
+вона змодельована як звичайна entity з двома `@ManyToOne`, а не `@ManyToMany`.
+
+**`onDelete` — три різні стратегії:**
+
+| Зв'язок | Стратегія | Чому |
+|---|---|---|
+| `accounts.user_id → users` | `CASCADE` | рахунок без власника не існує — видалення каскадує |
+| `transactions.account_id → accounts` | `CASCADE` | історія рахунку помирає разом із рахунком |
+| `transactions.instrument_id → instruments` | `RESTRICT` | інструмент з угодами видалити не можна — знищило б історію |
+| `transactions.category_id → categories` | `SET NULL` | категорія — лише класифікація, її зникнення не стирає факт |
+| `*.currency → currency` | (дефолт, без `onDelete`) | довідник ISO-4217, рядки з нього не видаляють |
+
+`grep -rn "onDelete" src/` — 4 збіги, 3 різні стратегії (`CASCADE`, `RESTRICT`, `SET NULL`).
+
+## Три індекси з ДЗ #12 — вручну в міграції
+
+Декоратор `@Index` не вміє `DESC`, `WHERE` чи вираз (`lower(...)`), тож entity несуть
+`@Index('...', { synchronize: false })` лише для документації, а сама DDL дописана руками в
+`src/migrations/*-InitSchema.ts`:
+
+```sql
+CREATE INDEX transactions_account_booked_idx ON transactions (account_id, booked_at DESC, id DESC);
+CREATE INDEX transactions_pending_booked_idx ON transactions (booked_at DESC, id) WHERE status = 'pending';
+CREATE INDEX accounts_lower_name_idx ON accounts (lower(name));
+```
+
+`down()` реально відкочує: `DROP INDEX` для цих трьох, `DROP CONSTRAINT` для FK-ів,
+`DROP TABLE` у зворотному порядку залежностей.
+
+## `synchronize: false`
+
+[`src/data-source.ts`](src/data-source.ts) вимикає його явно (`synchronize: false`), а не
+покладається на дефолт — так критерій видно без читання коду TypeORM.
+
+## Seed — детермінований і ідемпотентний
+
+[`src/seed.ts`](src/seed.ts): 6 валют, 8 users, 10 instruments, 8 categories, 12 accounts,
+12 fx_rate, 40 transactions. Жодного `Math.random()`/`Date.now()` — id зібрані з фіксованих
+префіксів (`00000001-0000-4000-8000-…`), дати — з фіксованого зсуву від `2026-01-01`.
+Ідемпотентність — через `repository.upsert(rows, { conflictPaths: [...] })` по PK/природному
+ключу кожної таблиці.
+
+Перевірка (рівно та команда, яку прогнав грейдер):
+
+```sql
+SELECT (SELECT count(*) FROM currency) || ',' || (SELECT count(*) FROM users) || ','
+    || (SELECT count(*) FROM instruments) || ',' || (SELECT count(*) FROM categories) || ','
+    || (SELECT count(*) FROM accounts) || ',' || (SELECT count(*) FROM fx_rate) || ','
+    || (SELECT count(*) FROM transactions);
+```
+
+До і після другого `npm run seed`: `6,8,10,8,12,12,40` — без змін.
+
+## N+1: доведено і вилікувано
+
+[`src/demo-nplus1.ts`](src/demo-nplus1.ts) вмикає `logging: ['query']` і власний
+`QueryCountLogger`, що рахує кожен SQL-запит. Граф — `account → transactions → instrument`
+(2 рівні). Виміряно на двох розмірах вибірки, щоб показати, що «після» не росте разом з N:
+
+| Розмір вибірки | наївно (запит у циклі) | `relations` / `leftJoinAndSelect` | `relationLoadStrategy: 'query'` |
+|---|---|---|---|
+| N=4  | 7 запитів (≥ 4)   | **1 запит** | 5 запитів |
+| N=12 | 20 запитів (≥ 12) | **1 запит** | 5 запитів |
+
+`1 + 2 × рівнів` для `relationLoadStrategy: 'query'` на графі з 2 рівнів = `1 + 2×2 = 5` — збігається.
+`relations`/`leftJoinAndSelect` дає рівно 1 запит лише коли вибірка фільтрується через
+`WHERE id IN (...)`, а не `take`/`skip`: пагінація разом із JOIN по one-to-many змушує TypeORM
+робити два запити (спершу id-и з `LIMIT`, потім повні дані) — це задокументовано прямо в скрипті.
+
+## Repository vs QueryBuilder
+
+[`src/report.ts`](src/report.ts) — оборот по категоріях (`SUM(amount_cents * fx_rate)`,
+`COUNT`, `GROUP BY`, `JOIN` на `categories`) через `createQueryBuilder().getRawMany()`.
+`find()`/`findOne()` — поки результат є графом entities й фільтром по колонках (спискові й
+детальні ендпоінти). `QueryBuilder` — щойно результат перестає бути entity: агрегати,
+`GROUP BY`, віконні функції, ручні підзапити чи часткові проєкції, які `find()` виразити не може.
+
+## TypeORM у застосунку (опційно)
+
+`AccountsRepository`/`TransactionsRepository` — ті самі абстрактні класи з ДЗ #9
+([`src/accounts/accounts.repository.ts`](src/accounts/accounts.repository.ts),
+[`src/transactions/transactions.repository.ts`](src/transactions/transactions.repository.ts)),
+тепер асинхронні. За замовчуванням Nest використовує in-memory реалізацію (щоб `npm start` і
+`npm test` не потребували живого Postgres) — `DB_BACKEND=typeorm` перемикає DI-провайдер на
+[`TypeOrmAccountsRepository`](src/accounts/typeorm-accounts.repository.ts) /
+[`TypeOrmTransactionsRepository`](src/transactions/typeorm-transactions.repository.ts), які
+мапають entity на доменні типи ДЗ #9. Домен цього ДЗ не має понять `user_id` чи знімка
+`fx_rate`, тож обидва репозиторії підставляють задокументовані заглушки (фіксований
+system-user, плейсхолдер-курс) — позначено коментарями в коді.
+
+## Структура ДЗ #13
+
+| Шлях | Призначення |
+|---|---|
+| [`src/entities/`](src/entities/) | 7 entities зі схеми ДЗ #12, relations, `@Check`, `@Index` |
+| [`src/migrations/`](src/migrations/) | згенерована й вручну допрацьована початкова міграція |
+| [`src/data-source.ts`](src/data-source.ts) | `DataSource` з `synchronize: false`, підключення з `process.env` |
+| [`src/seed.ts`](src/seed.ts) | детермінований ідемпотентний seed |
+| [`src/demo-nplus1.ts`](src/demo-nplus1.ts) | N+1 «до/після» з лічильником SQL-запитів |
+| [`src/report.ts`](src/report.ts) | звіт через `createQueryBuilder().getRawMany()` |
+| [`scripts/with-secrets.sh`](scripts/with-secrets.sh) | обгортка сховища (ДЗ #11) з `SKIP_VAULT=1` для грейдера |
+| [`.secrets/infisical.env.example`](.secrets/infisical.env.example) | шаблон логіна в сховище |

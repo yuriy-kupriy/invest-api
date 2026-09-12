@@ -3,11 +3,11 @@ import { Account } from '@/domain/account';
 import { Currency } from '@/domain/currency';
 
 export abstract class AccountsRepository {
-  abstract findById(id: string): Account | undefined;
-  abstract findAll(): Account[];
-  abstract save(account: Account): Account;
-  abstract updateBalance(id: string, delta: number): void;
-  abstract has(id: string): boolean;
+  abstract findById(id: string): Promise<Account | undefined>;
+  abstract findAll(): Promise<Account[]>;
+  abstract save(account: Account): Promise<Account>;
+  abstract updateBalance(id: string, delta: number): Promise<void>;
+  abstract has(id: string): Promise<boolean>;
 }
 
 @Injectable()
@@ -19,20 +19,20 @@ export class InMemoryAccountsRepository extends AccountsRepository {
     this.seed();
   }
 
-  findById(id: string): Account | undefined {
+  async findById(id: string): Promise<Account | undefined> {
     return this.accounts.get(id);
   }
 
-  findAll(): Account[] {
+  async findAll(): Promise<Account[]> {
     return [...this.accounts.values()];
   }
 
-  save(account: Account): Account {
+  async save(account: Account): Promise<Account> {
     this.accounts.set(account.id, account);
     return account;
   }
 
-  updateBalance(id: string, delta: number): void {
+  async updateBalance(id: string, delta: number): Promise<void> {
     const account = this.accounts.get(id);
     if (!account) {
       return;
@@ -40,7 +40,7 @@ export class InMemoryAccountsRepository extends AccountsRepository {
     account.balance_cents += delta;
   }
 
-  has(id: string): boolean {
+  async has(id: string): Promise<boolean> {
     return this.accounts.has(id);
   }
 

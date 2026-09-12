@@ -44,14 +44,14 @@ export class TransactionsService {
    */
   private readonly toWire = (tx: Transaction): TransactionResponse => toTransaction(tx, this.drift);
 
-  list(limit: number, cursor?: string, accountId?: string): TransactionPage {
-    if (accountId && !this.accountsRepo.has(accountId)) {
+  async list(limit: number, cursor?: string, accountId?: string): Promise<TransactionPage> {
+    if (accountId && !(await this.accountsRepo.has(accountId))) {
       throw problem(HttpStatus.NOT_FOUND, 'account-not-found', `account ${accountId} was not found`);
     }
 
-    const rows = this.transactionsRepo
-      .findAll()
-      .filter((tx) => !accountId || tx.account_id === accountId);
+    const rows = (await this.transactionsRepo.findAll()).filter(
+      (tx) => !accountId || tx.account_id === accountId,
+    );
     const page = paginate(rows, (tx) => tx.booked_at, limit, cursor);
     return {
       items: page.items.map(this.toWire),
@@ -59,13 +59,13 @@ export class TransactionsService {
     };
   }
 
-  create(input: CreateTransactionsDto): TransactionBatch {
+  async create(input: CreateTransactionsDto): Promise<TransactionBatch> {
     const now = new Date().toISOString();
     const created: Transaction[] = [];
     const deltas = new Map<string, number>();
 
     for (const entry of input.entries) {
-      const account = this.accountsRepo.findById(entry.account_id);
+      const account = await this.accountsRepo.findById(entry.account_id);
       if (!account) {
         throw problem(
           HttpStatus.NOT_FOUND,
@@ -100,17 +100,17 @@ export class TransactionsService {
     }
 
     for (const tx of created) {
-      this.transactionsRepo.save(tx);
+      await this.transactionsRepo.save(tx);
     }
     for (const [id, delta] of deltas) {
-      this.accountsRepo.updateBalance(id, delta);
+      await this.accountsRepo.updateBalance(id, delta);
     }
 
     return { transactions: created.map(this.toWire) };
   }
 
-  getById(transactionId: string): TransactionResponse {
-    const tx = this.transactionsRepo.findById(transactionId);
+  async getById(transactionId: string): Promise<TransactionResponse> {
+    const tx = await this.transactionsRepo.findById(transactionId);
     if (!tx) {
       throw problem(
         HttpStatus.NOT_FOUND,

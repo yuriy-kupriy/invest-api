@@ -18,7 +18,13 @@
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down -v",
     "secrets:init": "bash scripts/init-secret.sh",
-    "rotate": "bash rotate.sh"
+    "rotate": "bash rotate.sh",
+    "migrate": "bash scripts/with-secrets.sh dev npx typeorm migration:run -d dist/data-source.js",
+    "migrate:show": "bash scripts/with-secrets.sh dev npx typeorm migration:show -d dist/data-source.js",
+    "migrate:revert": "bash scripts/with-secrets.sh dev npx typeorm migration:revert -d dist/data-source.js",
+    "seed": "bash scripts/with-secrets.sh dev node dist/seed.js",
+    "demo:nplus1": "bash scripts/with-secrets.sh dev node dist/demo-nplus1.js",
+    "report": "bash scripts/with-secrets.sh dev node dist/report.js"
   },
   "engines": {
     "node": ">=18"
@@ -29,6 +35,7 @@
     "@nestjs/core": "^10.4.15",
     "@nestjs/platform-express": "^10.4.15",
     "@nestjs/swagger": "^7.4.2",
+    "@nestjs/typeorm": "^12.0.1",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
     "express": "^4.22.2",
@@ -38,6 +45,7 @@
     "rxjs": "^7.8.1",
     "swagger-ui-express": "^5.0.1",
     "tsconfig-paths": "^4.2.0",
+    "typeorm": "^1.1.1",
     "zod": "^4.5.4"
   },
   "devDependencies": {

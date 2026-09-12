@@ -37,7 +37,7 @@ describe('AccountsService', () => {
           useValue: {
             findById: jest.fn(),
             findAll: jest.fn(),
-            save: jest.fn((account: Account) => account),
+            save: jest.fn((account: Account) => Promise.resolve(account)),
             updateBalance: jest.fn(),
             has: jest.fn(),
           },
@@ -54,10 +54,10 @@ describe('AccountsService', () => {
   });
 
   describe('list', () => {
-    it('returns accounts newest first and a next_cursor when the page is full', () => {
-      accountsRepo.findAll.mockReturnValue([cashAccount, brokerageAccount]);
+    it('returns accounts newest first and a next_cursor when the page is full', async () => {
+      accountsRepo.findAll.mockResolvedValue([cashAccount, brokerageAccount]);
 
-      const page = service.list(1);
+      const page = await service.list(1);
 
       expect(page.items).toEqual([brokerageAccount]);
       expect(page.next_cursor).toEqual(expect.any(String));
@@ -65,8 +65,8 @@ describe('AccountsService', () => {
   });
 
   describe('create', () => {
-    it('saves an account with the opening balance', () => {
-      const created = service.create({
+    it('saves an account with the opening balance', async () => {
+      const created = await service.create({
         name: 'EUR cash',
         type: 'cash',
         currency: Currency.EUR,
@@ -85,17 +85,17 @@ describe('AccountsService', () => {
   });
 
   describe('getById', () => {
-    it('returns the account when it exists', () => {
-      accountsRepo.findById.mockReturnValue(cashAccount);
+    it('returns the account when it exists', async () => {
+      accountsRepo.findById.mockResolvedValue(cashAccount);
 
-      expect(service.getById(cashAccount.id)).toEqual(cashAccount);
+      expect(await service.getById(cashAccount.id)).toEqual(cashAccount);
     });
 
-    it('throws ProblemException when the account is missing', () => {
-      accountsRepo.findById.mockReturnValue(undefined);
+    it('throws ProblemException when the account is missing', async () => {
+      accountsRepo.findById.mockResolvedValue(undefined);
 
       try {
-        service.getById('00000000-0000-4000-8000-000000000000');
+        await service.getById('00000000-0000-4000-8000-000000000000');
         throw new Error('expected ProblemException');
       } catch (err) {
         expect(err).toBeInstanceOf(ProblemException);

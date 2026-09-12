@@ -35,7 +35,7 @@ export class TransactionsController {
   @ApiBadRequestResponse(problemResponse(i18n('transactions.list.badRequest')))
   @ApiNotFoundResponse(problemResponse(i18n('transactions.list.notFound')))
   @ApiInternalServerErrorResponse(problemResponse(i18n('errors.internal')))
-  list(@Query() query: ListTransactionsQueryDto): TransactionPage {
+  list(@Query() query: ListTransactionsQueryDto): Promise<TransactionPage> {
     return this.transactionsService.list(query.limit, query.cursor, query.account_id);
   }
 
@@ -64,7 +64,7 @@ export class TransactionsController {
   @ApiConflictResponse(problemResponse(i18n('transactions.create.conflict')))
   @ApiUnprocessableEntityResponse(problemResponse(i18n('transactions.create.unprocessable')))
   @ApiInternalServerErrorResponse(problemResponse(i18n('errors.internal')))
-  create(@Body() body: CreateTransactionsDto): TransactionBatch {
+  create(@Body() body: CreateTransactionsDto): Promise<TransactionBatch> {
     return this.transactionsService.create(body);
   }
 
@@ -75,7 +75,7 @@ export class TransactionsController {
   @ApiBadRequestResponse(problemResponse(i18n('transactions.get.badRequest')))
   @ApiNotFoundResponse(problemResponse(i18n('transactions.get.notFound')))
   @ApiInternalServerErrorResponse(problemResponse(i18n('errors.internal')))
-  get(@Param() params: TransactionIdParamDto): TransactionResponse {
+  get(@Param() params: TransactionIdParamDto): Promise<TransactionResponse> {
     return this.transactionsService.getById(params.transaction_id);
   }
 }

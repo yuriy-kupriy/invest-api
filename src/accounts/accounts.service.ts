@@ -11,15 +11,15 @@ import { CreateAccountDto } from './dto/create-account.dto';
 export class AccountsService {
   constructor(private readonly accountsRepo: AccountsRepository) {}
 
-  list(limit: number, cursor?: string): AccountPage {
-    const page = paginate(this.accountsRepo.findAll(), (account) => account.created_at, limit, cursor);
+  async list(limit: number, cursor?: string): Promise<AccountPage> {
+    const page = paginate(await this.accountsRepo.findAll(), (account) => account.created_at, limit, cursor);
     return {
       items: page.items.map(toAccount),
       next_cursor: page.next_cursor,
     };
   }
 
-  create(input: CreateAccountDto): Account {
+  async create(input: CreateAccountDto): Promise<Account> {
     const account: Account = {
       id: randomUUID(),
       name: input.name,
@@ -28,12 +28,12 @@ export class AccountsService {
       balance_cents: input.opening_balance_cents,
       created_at: new Date().toISOString(),
     };
-    this.accountsRepo.save(account);
+    await this.accountsRepo.save(account);
     return toAccount(account);
   }
 
-  getById(accountId: string): Account {
-    const account = this.accountsRepo.findById(accountId);
+  async getById(accountId: string): Promise<Account> {
+    const account = await this.accountsRepo.findById(accountId);
     if (!account) {
       throw problem(HttpStatus.NOT_FOUND, 'account-not-found', `account ${accountId} was not found`);
     }

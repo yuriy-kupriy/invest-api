@@ -40,19 +40,19 @@ describe('AccountsController', () => {
     jest.clearAllMocks();
   });
 
-  it('list delegates limit and cursor to the service', () => {
+  it('list delegates limit and cursor to the service', async () => {
     const page = { items: [cashAccount], next_cursor: null };
-    accountsService.list.mockReturnValue(page);
+    accountsService.list.mockResolvedValue(page);
 
-    expect(controller.list({ limit: 2, cursor: 'abc' })).toBe(page);
+    expect(await controller.list({ limit: 2, cursor: 'abc' })).toBe(page);
     expect(accountsService.list).toHaveBeenCalledWith(2, 'abc');
   });
 
-  it('create sets Location and returns the account', () => {
-    accountsService.create.mockReturnValue(cashAccount);
+  it('create sets Location and returns the account', async () => {
+    accountsService.create.mockResolvedValue(cashAccount);
     const res = { location: jest.fn() };
 
-    const result = controller.create(
+    const result = await controller.create(
       {
         name: cashAccount.name,
         type: cashAccount.type,
@@ -66,10 +66,10 @@ describe('AccountsController', () => {
     expect(res.location).toHaveBeenCalledWith(`/accounts/${cashAccount.id}`);
   });
 
-  it('get passes account_id to the service', () => {
-    accountsService.getById.mockReturnValue(cashAccount);
+  it('get passes account_id to the service', async () => {
+    accountsService.getById.mockResolvedValue(cashAccount);
 
-    expect(controller.get({ account_id: cashAccount.id })).toBe(cashAccount);
+    expect(await controller.get({ account_id: cashAccount.id })).toBe(cashAccount);
     expect(accountsService.getById).toHaveBeenCalledWith(cashAccount.id);
   });
 });

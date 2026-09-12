@@ -45,7 +45,7 @@ describe('TransactionsService', () => {
           useValue: {
             findById: jest.fn(),
             findAll: jest.fn(),
-            save: jest.fn((tx: Transaction) => tx),
+            save: jest.fn((tx: Transaction) => Promise.resolve(tx)),
           },
         },
         {
@@ -77,17 +77,17 @@ describe('TransactionsService', () => {
   });
 
   describe('list', () => {
-    it('throws when account_id filter points to a missing account', () => {
-      accountsRepo.has.mockReturnValue(false);
+    it('throws when account_id filter points to a missing account', async () => {
+      accountsRepo.has.mockResolvedValue(false);
 
-      expect(() => service.list(20, undefined, cashAccount.id)).toThrow(ProblemException);
+      await expect(service.list(20, undefined, cashAccount.id)).rejects.toThrow(ProblemException);
     });
 
-    it('filters by account_id when the account exists', () => {
-      accountsRepo.has.mockReturnValue(true);
-      transactionsRepo.findAll.mockReturnValue([expense]);
+    it('filters by account_id when the account exists', async () => {
+      accountsRepo.has.mockResolvedValue(true);
+      transactionsRepo.findAll.mockResolvedValue([expense]);
 
-      const page = service.list(20, undefined, cashAccount.id);
+      const page = await service.list(20, undefined, cashAccount.id);
 
       expect(page.items).toHaveLength(1);
       expect(page.items[0].id).toBe(expense.id);
@@ -96,10 +96,10 @@ describe('TransactionsService', () => {
   });
 
   describe('create', () => {
-    it('saves the batch and decrements balance for expense', () => {
-      accountsRepo.findById.mockReturnValue(cashAccount);
+    it('saves the batch and decrements balance for expense', async () => {
+      accountsRepo.findById.mockResolvedValue(cashAccount);
 
-      const result = service.create({
+      const result = await service.create({
         entries: [
           {
             account_id: cashAccount.id,
@@ -122,10 +122,10 @@ describe('TransactionsService', () => {
       expect(accountsRepo.updateBalance).toHaveBeenCalledWith(cashAccount.id, -1250);
     });
 
-    it('does not save anything when a later entry is invalid', () => {
-      accountsRepo.findById.mockReturnValueOnce(cashAccount).mockReturnValueOnce(undefined);
+    it('does not save anything when a later entry is invalid', async () => {
+      accountsRepo.findById.mockResolvedValueOnce(cashAccount).mockResolvedValueOnce(undefined);
 
-      expect(() =>
+      await expect(
         service.create({
           entries: [
             {
@@ -144,17 +144,17 @@ describe('TransactionsService', () => {
             },
           ],
         }),
-      ).toThrow(ProblemException);
+      ).rejects.toThrow(ProblemException);
 
       expect(transactionsRepo.save).not.toHaveBeenCalled();
       expect(accountsRepo.updateBalance).not.toHaveBeenCalled();
     });
 
-    it('throws currency-mismatch when entry currency differs from the account', () => {
-      accountsRepo.findById.mockReturnValue(cashAccount);
+    it('throws currency-mismatch when entry currency differs from the account', async () => {
+      accountsRepo.findById.mockResolvedValue(cashAccount);
 
       try {
-        service.create({
+        await service.create({
           entries: [
             {
               account_id: cashAccount.id,
@@ -175,20 +175,20 @@ describe('TransactionsService', () => {
   });
 
   describe('getById', () => {
-    it('returns the transaction when it exists', () => {
-      transactionsRepo.findById.mockReturnValue(expense);
+    it('returns the transaction when it exists', async () => {
+      transactionsRepo.findById.mockResolvedValue(expense);
 
-      expect(service.getById(expense.id)).toMatchObject({
+      expect(await service.getById(expense.id)).toMatchObject({
         id: expense.id,
         amount_cents: expense.amount_cents,
       });
     });
 
-    it('throws when the transaction is missing', () => {
-      transactionsRepo.findById.mockReturnValue(undefined);
+    it('throws when the transaction is missing', async () => {
+      transactionsRepo.findById.mockResolvedValue(undefined);
 
       try {
-        service.getById('aaaaaaaa-0000-4000-8000-000000000099');
+        await service.getById('aaaaaaaa-0000-4000-8000-000000000099');
         throw new Error('expected ProblemException');
       } catch (err) {
         expect(err).toBeInstanceOf(ProblemException);
