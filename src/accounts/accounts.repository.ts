@@ -49,7 +49,7 @@ export class InMemoryAccountsRepository extends AccountsRepository {
     for (const account of [
       {
         id: '11111111-1111-4111-8111-111111111111',
-        name: 'Готівка UAH',
+        name: 'Cash UAH',
         type: 'cash' as const,
         currency: Currency.UAH,
         balance_cents: 350000,
@@ -57,7 +57,7 @@ export class InMemoryAccountsRepository extends AccountsRepository {
       },
       {
         id: '22222222-2222-4222-8222-222222222222',
-        name: 'Брокерський IBKR',
+        name: 'IBKR brokerage',
         type: 'brokerage' as const,
         currency: Currency.USD,
         balance_cents: 1250000,
@@ -65,7 +65,7 @@ export class InMemoryAccountsRepository extends AccountsRepository {
       },
       {
         id: '33333333-3333-4333-8333-333333333333',
-        name: 'Квартира на Печерську',
+        name: 'Apartment in Pechersk',
         type: 'property' as const,
         currency: Currency.USD,
         balance_cents: 9500000,

@@ -35,7 +35,7 @@ export class AccountsService {
   getById(accountId: string): Account {
     const account = this.accountsRepo.findById(accountId);
     if (!account) {
-      throw problem(HttpStatus.NOT_FOUND, 'account-not-found', `рахунок ${accountId} не знайдено`);
+      throw problem(HttpStatus.NOT_FOUND, 'account-not-found', `account ${accountId} was not found`);
     }
     return toAccount(account);
   }

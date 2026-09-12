@@ -4,6 +4,9 @@ coverage/
 spec.json
 .env
 .env.local
+
+# Файли-секрети: пароль БД читається з secrets/db_password у рантаймі
+secrets/
 .idea/
 .DS_Store
 *.log

@@ -1,8 +1,6 @@
 import { Account } from '@/domain/account';
 import { Transaction, TransactionResponse } from '@/domain/transaction';
 
-const DRIFT = process.env.DRIFT === '1';
-
 export function toAccount(account: Account): Account {
   return {
     id: account.id,
@@ -14,12 +12,16 @@ export function toAccount(account: Account): Account {
   };
 }
 
-export function toTransaction(transaction: Transaction): TransactionResponse {
+/**
+ * `drift` comes from the validated config (ConfigService → DRIFT), never from
+ * process.env: the environment is read in exactly one place, the zod schema.
+ */
+export function toTransaction(transaction: Transaction, drift = false): TransactionResponse {
   return {
     id: transaction.id,
     account_id: transaction.account_id,
     type: transaction.type,
-    ...(DRIFT ? { amountCents: transaction.amount_cents } : { amount_cents: transaction.amount_cents }),
+    ...(drift ? { amountCents: transaction.amount_cents } : { amount_cents: transaction.amount_cents }),
     currency: transaction.currency,
     created_at: transaction.created_at,
     occurred_at: transaction.occurred_at,

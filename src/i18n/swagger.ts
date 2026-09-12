@@ -171,6 +171,38 @@ const catalog = {
     en: 'account 00000000-0000-4000-8000-000000000000 was not found',
     uk: 'рахунок 00000000-0000-4000-8000-000000000000 не знайдено',
   },
+  'tags.health': {
+    en: 'Health — liveness and database readiness',
+    uk: 'Health — живучість процесу і доступність БД',
+  },
+  'health.liveness.summary': {
+    en: 'Liveness probe',
+    uk: 'Перевірка живучості процесу',
+  },
+  'health.db.summary': {
+    en: 'Database readiness probe',
+    uk: 'Перевірка доступності бази даних',
+  },
+  'health.db.unavailable': {
+    en: 'The database did not answer',
+    uk: 'База даних не відповіла',
+  },
+  'dto.health.uptime': {
+    en: 'Process uptime in seconds. It does not reset on a password rotation.',
+    uk: 'Час життя процесу в секундах. Ротація пароля його не обнуляє.',
+  },
+  'dto.health.latency': {
+    en: 'Round trip to Postgres in milliseconds.',
+    uk: 'Час обігу запиту до Postgres у мілісекундах.',
+  },
+  'dto.health.probeRows': {
+    en: 'Rows read from health_probe — proof the query reached real data.',
+    uk: 'Прочитано рядків із health_probe — доказ, що запит дійшов до реальних даних.',
+  },
+  'dto.health.poolTotal': {
+    en: 'Connections currently held by the pool.',
+    uk: 'Скільки зʼєднань зараз тримає пул.',
+  },
 } as const;
 
 export type SwaggerI18nKey = keyof typeof catalog;

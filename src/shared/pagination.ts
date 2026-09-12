@@ -35,7 +35,7 @@ export function decodeCursor(raw: string): CursorPayload {
     throw new ProblemException(
       HttpStatus.BAD_REQUEST,
       'bad-cursor',
-      'cursor не розпізнано — він непрозорий і належить серверу',
+      'cursor not recognised — it is opaque and belongs to the server',
     );
   }
 }

@@ -1,6 +1,8 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import { AccountsRepository } from '@/accounts/accounts.repository';
+import { Env } from '@/config/env.schema';
 import {
   Transaction,
   TransactionBatch,
@@ -25,14 +27,26 @@ const SIGN: Record<TransactionType, 1 | -1> = {
 
 @Injectable()
 export class TransactionsService {
+  /** Read once from the validated config — see toTransaction(). */
+  private readonly drift: boolean;
+
   constructor(
     private readonly transactionsRepo: TransactionsRepository,
     private readonly accountsRepo: AccountsRepository,
-  ) {}
+    config: ConfigService<Env, true>,
+  ) {
+    this.drift = config.get('DRIFT', { infer: true }) === '1';
+  }
+
+  /**
+   * Arrow field so it can be handed straight to `.map` — and so no call site can
+   * forget to thread `drift` through, which the bare mapper's default would hide.
+   */
+  private readonly toWire = (tx: Transaction): TransactionResponse => toTransaction(tx, this.drift);
 
   list(limit: number, cursor?: string, accountId?: string): TransactionPage {
     if (accountId && !this.accountsRepo.has(accountId)) {
-      throw problem(HttpStatus.NOT_FOUND, 'account-not-found', `рахунок ${accountId} не знайдено`);
+      throw problem(HttpStatus.NOT_FOUND, 'account-not-found', `account ${accountId} was not found`);
     }
 
     const rows = this.transactionsRepo
@@ -40,7 +54,7 @@ export class TransactionsService {
       .filter((tx) => !accountId || tx.account_id === accountId);
     const page = paginate(rows, (tx) => tx.occurred_at, limit, cursor);
     return {
-      items: page.items.map(toTransaction),
+      items: page.items.map(this.toWire),
       next_cursor: page.next_cursor,
     };
   }
@@ -56,14 +70,14 @@ export class TransactionsService {
         throw problem(
           HttpStatus.NOT_FOUND,
           'account-not-found',
-          `рахунок ${entry.account_id} не знайдено`,
+          `account ${entry.account_id} was not found`,
         );
       }
       if (account.currency !== entry.currency) {
         throw problem(
           HttpStatus.UNPROCESSABLE_ENTITY,
           'currency-mismatch',
-          `валюта ${entry.currency} не збігається з валютою рахунку ${account.id} (${account.currency})`,
+          `currency ${entry.currency} does not match the currency of account ${account.id} (${account.currency})`,
         );
       }
 
@@ -92,7 +106,7 @@ export class TransactionsService {
       this.accountsRepo.updateBalance(id, delta);
     }
 
-    return { transactions: created.map(toTransaction) };
+    return { transactions: created.map(this.toWire) };
   }
 
   getById(transactionId: string): TransactionResponse {
@@ -101,9 +115,9 @@ export class TransactionsService {
       throw problem(
         HttpStatus.NOT_FOUND,
         'transaction-not-found',
-        `транзакцію ${transactionId} не знайдено`,
+        `transaction ${transactionId} was not found`,
       );
     }
-    return toTransaction(tx);
+    return this.toWire(tx);
   }
 }

@@ -30,7 +30,7 @@ describe('invest-api (e2e)', () => {
     amount_cents: 1250,
     currency: 'UAH',
     occurred_at: '2026-08-25T10:00:00.000Z',
-    description: 'Обід',
+    description: 'Lunch',
   };
 
   it('rejects POST /transactions without Idempotency-Key as problem+json', async () => {
@@ -118,5 +118,16 @@ describe('invest-api (e2e)', () => {
     expect(res.status).toBe(404);
     expect(res.headers['content-type']).toContain('application/problem+json');
     expect(res.body.status).toBe(404);
+  });
+
+  it('answers GET /health without touching the database', async () => {
+    const res = await request(app.getHttpServer()).get('/health');
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('ok');
+    // The response also passed the OpenApiValidator against the Health schema,
+    // which is what keeps /health honest about its own shape.
+    expect(typeof res.body.uptime_seconds).toBe('number');
+    expect(res.body.node_env).toBe('test');
   });
 });

@@ -39,6 +39,8 @@ tags:
     description: Accounts — cash, bank, brokerage, property
   - name: transactions
     description: Transactions — income, expenses, transfers, buy and sell
+  - name: health
+    description: Health — liveness and database readiness
 
 paths:
   /accounts:
@@ -275,6 +277,46 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /health:
+    get:
+      operationId: livenessProbe
+      summary: Liveness probe
+      description: >
+        Answers one question: did this process restart? `uptime_seconds` is the
+        process uptime, so it grows across a database password rotation and only
+        resets on a real restart. Deliberately does not touch the database.
+      tags: [health]
+      responses:
+        '200':
+          description: The process is alive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /health/db:
+    get:
+      operationId: databaseReadinessProbe
+      summary: Database readiness probe
+      description: >
+        A real round trip to Postgres. The pool reads the password from the secret
+        file on every new connection, so a 200 here right after a rotation is the
+        proof that the rotated secret took effect without a restart.
+      tags: [health]
+      responses:
+        '200':
+          description: The database answered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DbHealth'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
 components:
   responses:
     BadRequest:
@@ -312,7 +354,60 @@ components:
           schema:
             $ref: '#/components/schemas/Problem'
 
+    ServiceUnavailable:
+      description: A dependency — the database — did not answer
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
   schemas:
+    Health:
+      type: object
+      description: Liveness of the process itself, with no dependency checked.
+      required: [status, uptime_seconds, version, node_env]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        uptime_seconds:
+          type: number
+          description: Process uptime in seconds. A password rotation does not reset it.
+          example: 42.317
+        version:
+          type: string
+          example: 1.0.0
+        node_env:
+          type: string
+          enum: [development, test, production]
+
+    DbHealth:
+      type: object
+      description: Result of a real query against Postgres, executed with the current secret.
+      required: [status, latency_ms, now, probe_rows, pool_total, pool_idle]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        latency_ms:
+          type: number
+          description: Round trip to Postgres in milliseconds.
+          example: 3.114
+        now:
+          type: string
+          format: date-time
+        probe_rows:
+          type: integer
+          description: Rows read from `health_probe` — proof the query reached real data.
+          example: 1
+        pool_total:
+          type: integer
+          description: Connections currently held by the pool.
+          example: 1
+        pool_idle:
+          type: integer
+          example: 1
+
     Problem:
       type: object
       description: |

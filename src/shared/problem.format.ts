@@ -5,11 +5,12 @@ import { ProblemException } from '@/shared/problem.exception';
 const PROBLEM_BASE = 'https://api.invest.example/problems';
 
 const TITLES: Record<number, string> = {
-  [HttpStatus.BAD_REQUEST]: 'Некоректний запит',
-  [HttpStatus.NOT_FOUND]: 'Ресурс не знайдено',
-  [HttpStatus.CONFLICT]: 'Конфлікт зі станом ресурсу',
-  [HttpStatus.UNPROCESSABLE_ENTITY]: 'Тіло не пройшло перевірку',
-  [HttpStatus.INTERNAL_SERVER_ERROR]: 'Внутрішня помилка сервера',
+  [HttpStatus.BAD_REQUEST]: 'Bad request',
+  [HttpStatus.NOT_FOUND]: 'Resource not found',
+  [HttpStatus.CONFLICT]: 'Conflict with resource state',
+  [HttpStatus.UNPROCESSABLE_ENTITY]: 'The request body failed validation',
+  [HttpStatus.INTERNAL_SERVER_ERROR]: 'Internal server error',
+  [HttpStatus.SERVICE_UNAVAILABLE]: 'Service temporarily unavailable',
 };
 
 export interface ProblemBody {
@@ -50,7 +51,7 @@ export function toProblem(err: unknown, req: Request): ProblemBody {
     const status = err.getStatus();
     return {
       type: `${PROBLEM_BASE}/${err.code}`,
-      title: TITLES[status] ?? 'Помилка',
+      title: TITLES[status] ?? 'Error',
       status,
       detail: err.message,
       instance: req.originalUrl,
@@ -62,7 +63,7 @@ export function toProblem(err: unknown, req: Request): ProblemBody {
     const status = err.getStatus();
     return {
       type: `${PROBLEM_BASE}/${status}`,
-      title: TITLES[status] ?? 'Помилка',
+      title: TITLES[status] ?? 'Error',
       status,
       detail: detailFromHttpException(err),
       instance: req.originalUrl,
@@ -73,7 +74,7 @@ export function toProblem(err: unknown, req: Request): ProblemBody {
   const status = e.status ?? e.statusCode ?? HttpStatus.INTERNAL_SERVER_ERROR;
   const body: ProblemBody = {
     type: `${PROBLEM_BASE}/${e.code ?? status}`,
-    title: TITLES[status] ?? 'Помилка',
+    title: TITLES[status] ?? 'Error',
     status,
     detail: e.message ?? 'Internal Server Error',
     instance: req.originalUrl,

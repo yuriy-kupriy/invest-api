@@ -1,0 +1,25 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: invest-postgres
+    environment:
+      # Local development: the superuser is only needed by the rotation script
+      # (ALTER ROLE). The app connects as invest_app, whose password lives in a file.
+      POSTGRES_DB: invest
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      # Host port 5432 is often taken by a locally installed Postgres, so the
+      # container is published on 5433. Override with POSTGRES_HOST_PORT.
+      - '${POSTGRES_HOST_PORT:-5433}:5432'
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d invest']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
