@@ -17,11 +17,11 @@ export interface Transaction {
   type: TransactionType;
   amount_cents: number;
   currency: Currency;
-  occurred_at: string;
+  created_at: string;
+  booked_at: string;
   description: string | null;
   instrument_symbol: string | null;
   quantity_micro: number | null;
-  created_at: string;
 }
 
 export interface TransactionPage {

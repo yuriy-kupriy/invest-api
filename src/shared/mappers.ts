@@ -24,7 +24,7 @@ export function toTransaction(transaction: Transaction, drift = false): Transact
     ...(drift ? { amountCents: transaction.amount_cents } : { amount_cents: transaction.amount_cents }),
     currency: transaction.currency,
     created_at: transaction.created_at,
-    occurred_at: transaction.occurred_at,
+    booked_at: transaction.booked_at,
     description: transaction.description,
     quantity_micro: transaction.quantity_micro,
     instrument_symbol: transaction.instrument_symbol,

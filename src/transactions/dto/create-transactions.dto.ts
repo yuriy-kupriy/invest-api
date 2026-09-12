@@ -39,7 +39,7 @@ export class TransactionEntryDto {
 
   @ApiProperty({ format: 'date-time', example: '2026-08-25T10:00:00.000Z' })
   @IsISO8601()
-  occurred_at: string;
+  booked_at: string;
 
   @ApiPropertyOptional({ nullable: true, maxLength: 500, example: 'Lunch' })
   @IsOptional()

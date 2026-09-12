@@ -26,9 +26,9 @@ export class TransactionDto {
   @ApiProperty({
     format: 'date-time',
     example: '2026-08-20T12:30:00.000Z',
-    description: i18n('dto.transaction.occurredAt'),
+    description: i18n('dto.transaction.bookedAt'),
   })
-  occurred_at!: string;
+  booked_at!: string;
 
   @ApiProperty({ nullable: true, example: 'Coffee and breakfast', maxLength: 500 })
   description!: string | null;
