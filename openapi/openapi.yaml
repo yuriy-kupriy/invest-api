@@ -41,6 +41,8 @@ tags:
     description: Transactions — income, expenses, transfers, buy and sell
   - name: health
     description: Health — liveness and database readiness
+  - name: fx-rates
+    description: FX rates — currency rate lookups backing transaction snapshots
 
 paths:
   /accounts:
@@ -270,6 +272,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Transaction'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /fx-rates/{currency}/latest:
+    get:
+      operationId: getLatestFxRate
+      summary: Get latest fx rate
+      description: >
+        Resolves the fx rate that would be used to snapshot a transaction booked
+        on `on` (defaults to today): the latest `fx_rate` row for `currency` with
+        `rate_date <= on`. `UAH` always resolves to `1` — it is the quoting base,
+        not a row in `fx_rate`.
+      tags: [fx-rates]
+      parameters:
+        - name: currency
+          in: path
+          required: true
+          description: Currency to resolve a rate for.
+          schema:
+            $ref: '#/components/schemas/Currency'
+        - name: on
+          in: query
+          required: false
+          description: Resolve the rate as of this date. Defaults to today.
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Effective fx rate
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FxRate'
         '400':
           $ref: '#/components/responses/BadRequest'
         '404':
@@ -670,6 +710,29 @@ components:
             Opaque next-page token. `null` means there are no more pages —
             the client does not count pages or compare `items` length to `limit`.
           example: eyJjIjoiMjAyNi0wOC0yNVQxMDowMDowMFoiLCJpZCI6IjllOWMifQ
+
+    FxRate:
+      type: object
+      description: >
+        The rate that applies for a currency on or before a given date — either
+        a real `fx_rate` row, or the `UAH` identity rate (`1`), which is never a
+        row since `UAH` is the quoting base.
+      required: [currency, rate, rate_date, source]
+      properties:
+        currency:
+          $ref: '#/components/schemas/Currency'
+        rate:
+          type: string
+          description: UAH per one unit of `currency`, as a decimal string (never a float).
+          example: '41.6000000000'
+        rate_date:
+          type: string
+          format: date
+          example: '2026-01-02'
+        source:
+          type: string
+          description: Provider this rate came from — part of the `fx_rate` primary key. `base` for the UAH identity rate.
+          example: seed
 
     TransactionPage:
       type: object

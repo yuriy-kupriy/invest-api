@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Instrument } from '@/entities/instrument.entity';
 import { Transaction as TransactionEntity } from '@/entities/transaction.entity';
+import { FxRatesService } from '@/fx-rates/fx-rates.service';
 import { Currency } from '@/domain/currency';
 import { Transaction, TransactionType } from '@/domain/transaction';
 
@@ -21,19 +22,12 @@ function toDomain(entity: TransactionEntity): Transaction {
   };
 }
 
-/**
- * The HW #9 domain snapshots no fx rate (it predates the HW #12 fx_rate
- * table), while `transactions.fx_rate` is NOT NULL and CHECKs
- * `(currency = 'UAH') = (fx_rate = 1)`. This is a placeholder rate for
- * non-UAH currencies until the domain type carries a real one.
- */
-const PLACEHOLDER_FX_RATE: Record<string, string> = { UAH: '1', USD: '41.5', EUR: '45.0' };
-
 @Injectable()
 export class TransactionsRepository {
   constructor(
     @InjectRepository(TransactionEntity) private readonly repo: Repository<TransactionEntity>,
     @InjectRepository(Instrument) private readonly instrumentsRepo: Repository<Instrument>,
+    private readonly fxRatesService: FxRatesService,
   ) {}
 
   async findById(id: string): Promise<Transaction | undefined> {
@@ -47,9 +41,13 @@ export class TransactionsRepository {
   }
 
   async save(transaction: Transaction): Promise<Transaction> {
-    const instrument = transaction.instrument_symbol
-      ? await this.instrumentsRepo.findOne({ where: { symbol: transaction.instrument_symbol } })
-      : null;
+    const bookedAt = new Date(transaction.booked_at);
+    const [instrument, fxRate] = await Promise.all([
+      transaction.instrument_symbol
+        ? this.instrumentsRepo.findOne({ where: { symbol: transaction.instrument_symbol } })
+        : null,
+      this.fxRatesService.getEffectiveRate(transaction.currency, bookedAt),
+    ]);
 
     const entity = this.repo.create({
       id: transaction.id,
@@ -60,10 +58,10 @@ export class TransactionsRepository {
       type: transaction.type as TransactionType,
       status: 'posted',
       amountCents: transaction.amount_cents,
-      fxRate: PLACEHOLDER_FX_RATE[transaction.currency] ?? '1',
+      fxRate,
       quantityMicro: transaction.quantity_micro,
       unitPrice: null,
-      bookedAt: new Date(transaction.booked_at),
+      bookedAt,
       description: transaction.description,
     });
     await this.repo.save(entity);

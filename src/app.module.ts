@@ -4,6 +4,7 @@ import { APP_FILTER } from '@nestjs/core';
 import { AccountsModule } from '@/accounts/accounts.module';
 import { validateEnv } from '@/config/env.validation';
 import { DbModule } from '@/db/db.module';
+import { FxRatesModule } from '@/fx-rates/fx-rates.module';
 import { HealthModule } from '@/health/health.module';
 import { IdempotencyMiddleware } from '@/shared/idempotency.middleware';
 import { ProblemExceptionFilter } from '@/shared/problem.filter';
@@ -22,6 +23,7 @@ import { TransactionsModule } from '@/transactions/transactions.module';
     DbModule,
     HealthModule,
     AccountsModule,
+    FxRatesModule,
     TransactionsModule,
   ],
   providers: [

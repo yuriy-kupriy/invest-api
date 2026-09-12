@@ -175,6 +175,26 @@ const catalog = {
     en: 'Health — liveness and database readiness',
     uk: 'Health — живучість процесу і доступність БД',
   },
+  'tags.fxRates': {
+    en: 'FX rates — currency rate lookups backing transaction snapshots',
+    uk: 'Курси валют — довідка по курсах, якими знімки на транзакціях',
+  },
+  'fxRates.get.summary': {
+    en: 'Get latest fx rate',
+    uk: 'Отримати останній курс валюти',
+  },
+  'fxRates.get.badRequest': {
+    en: 'currency is not one of UAH/USD/EUR, or on is not a valid date',
+    uk: 'currency не UAH/USD/EUR, або on — некоректна дата',
+  },
+  'fxRates.get.notFound': {
+    en: 'No fx rate on or before the given date for this currency',
+    uk: 'Немає курсу на задану дату чи раніше для цієї валюти',
+  },
+  'dto.fxRate.on': {
+    en: 'Resolve the rate as of this date (defaults to today). The latest rate on or before it is returned.',
+    uk: 'Курс на цю дату (за замовчуванням — сьогодні). Повертається останній курс на цю дату або раніше.',
+  },
   'health.liveness.summary': {
     en: 'Liveness probe',
     uk: 'Перевірка живучості процесу',
