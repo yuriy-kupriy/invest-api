@@ -29,7 +29,7 @@ describe('invest-api (e2e)', () => {
     type: 'expense',
     amount_cents: 1250,
     currency: 'UAH',
-    occurred_at: '2026-08-25T10:00:00.000Z',
+    booked_at: '2026-08-25T10:00:00.000Z',
     description: 'Lunch',
   };
 

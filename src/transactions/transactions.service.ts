@@ -52,7 +52,7 @@ export class TransactionsService {
     const rows = this.transactionsRepo
       .findAll()
       .filter((tx) => !accountId || tx.account_id === accountId);
-    const page = paginate(rows, (tx) => tx.occurred_at, limit, cursor);
+    const page = paginate(rows, (tx) => tx.booked_at, limit, cursor);
     return {
       items: page.items.map(this.toWire),
       next_cursor: page.next_cursor,
@@ -87,7 +87,7 @@ export class TransactionsService {
         type: entry.type,
         amount_cents: entry.amount_cents,
         currency: entry.currency,
-        occurred_at: entry.occurred_at,
+        booked_at: entry.booked_at,
         description: entry.description ?? null,
         instrument_symbol: entry.instrument_symbol ?? null,
         quantity_micro: entry.quantity_micro ?? null,

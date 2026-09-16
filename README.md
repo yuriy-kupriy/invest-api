@@ -102,7 +102,7 @@ E2e — окремо в `test/`, зі своїм `test/jest-e2e.json`, теж з
 **Курсорна пагінація.** `limit` + `cursor` на списках, відповідь — `{ items, next_cursor }`,
 `next_cursor: null` означає, що сторінок більше немає. Курсор **непрозорий**: у спеці прямо написано,
 що його структура належить серверу й клієнт не має права його парсити. Всередині — base64url від
-`{ c: <ключ сортування>, id }`, keyset за складеним ключем `(occurred_at, id) DESC`.
+`{ c: <ключ сортування>, id }`, keyset за складеним ключем `(booked_at, id) DESC`.
 
 **Idempotency-Key — `required: true`** на `POST /transactions`. Стандарту на цей заголовок немає
 (IETF-draft `draft-ietf-httpapi-idempotency-key-header` зупинився на ревізії -07 і прострочений),
@@ -232,7 +232,7 @@ grep -c 'application/problem+json' openapi/openapi.yaml # 7   (треба ≥ 2)
 
 ```bash
 curl -i -X POST localhost:3000/transactions -H 'content-type: application/json' \
-  -d '{"entries":[{"account_id":"11111111-1111-4111-8111-111111111111","type":"expense","amount_cents":1250,"currency":"UAH","occurred_at":"2026-08-25T10:00:00.000Z"}]}'
+  -d '{"entries":[{"account_id":"11111111-1111-4111-8111-111111111111","type":"expense","amount_cents":1250,"currency":"UAH","booked_at":"2026-08-25T10:00:00.000Z"}]}'
 ```
 ```
 HTTP/1.1 400 Bad Request
@@ -272,7 +272,7 @@ curl -X POST localhost:3000/transactions -H 'content-type: application/json' \
 ```bash
 curl -i -X POST localhost:3000/transactions -H 'content-type: application/json' \
   -H 'Idempotency-Key: hw09-replay-0001' \
-  -d '{"entries":[{"account_id":"11111111-1111-4111-8111-111111111111","type":"expense","amount_cents":1250,"currency":"UAH","occurred_at":"2026-08-25T10:00:00.000Z","description":"Обід"}]}'
+  -d '{"entries":[{"account_id":"11111111-1111-4111-8111-111111111111","type":"expense","amount_cents":1250,"currency":"UAH","booked_at":"2026-08-25T10:00:00.000Z","description":"Обід"}]}'
 ```
 ```
 HTTP/1.1 201 Created
@@ -395,15 +395,22 @@ secrets/db_password → password: () => readFile() → pg.Pool → Postgres
 [`.env.example`](.env.example) (у git, зі фейковими значеннями). Реальний `.env` — у `.gitignore`
 і в `.dockerignore`.
 
-| Змінна | Обовʼязкова | Дефолт | Тип у схемі | Призначення |
-|---|---|---|---|---|
-| `NODE_ENV` | ні | `development` | `enum(development, test, production)` | режим роботи |
-| `PORT` | ні | `3000` | `coerce.number().int()` 1…65535 | порт HTTP |
-| `DB_URL` | **так** | — | `url()`, лише `postgres://`, **без пароля** | хост/порт/користувач/база |
-| `DB_PASSWORD_FILE` | ні | `./secrets/db_password` | непорожній рядок | шлях до файла-секрета |
-| `DB_POOL_MAX` | ні | `10` | `coerce.number().int()` 1…50 | розмір пулу `pg` |
-| `DB_CONNECT_TIMEOUT_MS` | ні | `5000` | `coerce.number().int()` ≥100 | таймаут конекту |
-| `DRIFT` | ні | `0` | `enum('0','1')` | навмисний дрейф мапера з ДЗ #9 |
+| Змінна | Обовʼязкова | Дефолт | Тип у схемі | **Джерело** | Призначення |
+|---|---|---|---|---|---|
+| `NODE_ENV` | ні | `development` | `enum(development, test, production)` | оточення | режим роботи |
+| `PORT` | ні | `3000` | `coerce.number().int()` 1…65535 | оточення | порт HTTP |
+| `DB_URL` | **так** | — | `url()`, лише `postgres://`, **без пароля** | **сховище** — значення в `.env` (у git лише `.env.example` з фейковим), пароль окремо зі сховища секретів `secrets/db_password` через `DB_PASSWORD_FILE` | хост/порт/користувач/база **цього ДЗ** |
+| `DB_PASSWORD_FILE` | ні | `./secrets/db_password` | непорожній рядок | оточення | шлях до файла-секрета |
+| `DB_POOL_MAX` | ні | `10` | `coerce.number().int()` 1…50 | оточення | розмір пулу `pg` |
+| `DB_CONNECT_TIMEOUT_MS` | ні | `5000` | `coerce.number().int()` ≥100 | оточення | таймаут конекту |
+| `DRIFT` | ні | `0` | `enum('0','1')` | оточення | навмисний дрейф мапера з ДЗ #9 |
+
+Рядок підключення застосунку живе в тому самому сховищі, що й із ДЗ #11, і вказує на базу ДЗ #12
+(`postgres://invest_app@localhost:5433/invest`). Нового env-файла під нього не заводилось: у git
+трекається лише `.env.example`, і жоден інший трекнутий env-файл змінної підключення не містить.
+Дев-креденшели самого контейнера Postgres — це окремий шлях: вони лишаються в
+[`docker-compose.yml`](docker-compose.yml) відкритим текстом, бо не є секретом і потрібні грейдеру,
+щоб підняти стенд зі свіжого клону.
 
 Три речі, які тут не випадкові:
 
@@ -528,3 +535,217 @@ docker history --no-trunc myapp | grep -i password      # порожньо
 | `rotate.sh` | ротація: ALTER ROLE → файл → `pg_terminate_backend` |
 | `docker-compose.yml`, `db/init.sql` | Postgres, роль `invest_app`, таблиця `health_probe` |
 | `Dockerfile`, `.dockerignore` | образ без секретів і без власних `ENV` |
+
+
+---
+
+# ДЗ #12 курсового: доменна схема, курси валют, індекси
+
+Третій крок курсового: БД перестає бути «керованим ресурсом заради health-чеку» й отримує доменну
+схему. Її ж успадкують ДЗ #13 (TypeORM-міграції), #14 (транзакції) і #15 (pooling і бекапи).
+
+**Головна таблиця — `transactions`**, після seed у ній **500 000 рядків**.
+
+## Підняти базу й підключитись
+
+Підняти Postgres — один рядок, працює на свіжому клоні без правок файлів:
+
+```bash
+docker compose up -d --wait postgres
+```
+
+Підключитись — один рядок:
+
+```bash
+docker compose exec postgres psql -U postgres -d invest
+```
+
+Неінтерактивний варіант того самого (`docker compose exec -T postgres psql -U postgres -d invest
+-Atc "SELECT 1"`) друкує `1`.
+
+Пароль ніде не треба вгадувати: дев-креденшели стенда (`postgres` / `postgres`) лежать відкритим
+текстом у [`docker-compose.yml`](docker-compose.yml) — вони не секрет, і потрібні саме для того,
+щоб база піднімалась зі свіжого клону. Пароль **застосунку** (роль `invest_app`) — окремий шлях:
+він живе у `secrets/db_password`, у git його немає, а в репозиторії лежить лише
+[`secrets/db_password.example`](secrets/db_password.example) зі стартовим дев-значенням.
+
+## Повний прогін — рівно ці команди
+
+Файли з `db/` подаються в контейнер через stdin, тому нічого монтувати не треба:
+
+```bash
+docker compose down -v && docker compose up -d --wait postgres
+docker compose exec -T postgres psql -U postgres -d invest -v ON_ERROR_STOP=1 -f - < db/schema.sql
+docker compose exec -T postgres psql -U postgres -d invest -v ON_ERROR_STOP=1 -f - < db/seed.sql
+for q in 1 2 3; do docker compose exec -T postgres psql -U postgres -d invest -c "EXPLAIN (ANALYZE, BUFFERS) $(cat db/queries/q$q.sql)"; done
+docker compose exec -T postgres psql -U postgres -d invest -v ON_ERROR_STOP=1 -f - < db/indexes.sql
+docker compose exec -T postgres psql -U postgres -d invest -c "ANALYZE;"
+for q in 1 2 3; do docker compose exec -T postgres psql -U postgres -d invest -c "EXPLAIN (ANALYZE, BUFFERS) $(cat db/queries/q$q.sql)"; done
+```
+
+До `db/indexes.sql` кожен із трьох планів містить `Seq Scan`; після — `Index Scan` і жодного
+`Seq Scan`. `db/seed.sql` наливає 500k транзакцій приблизно за 40 секунд.
+
+## Схема — 7 таблиць, 8 FOREIGN KEY
+
+| Таблиця | Рядків | Призначення |
+|---|---|---|
+| `currency` | 3 | довідник ISO 4217: `code`, `numeric_code` (r030), `exponent`, `name` |
+| `users` | 20 000 | власники рахунків |
+| `accounts` | 60 000 | рахунки: `cash` / `bank` / `brokerage` / `property` |
+| `instruments` | 500 | інструменти: `equity` / `etf` / `bond` / `crypto` |
+| `categories` | 24 | категорії доходів і витрат |
+| `fx_rate` | 1 568 | курс валюти на дату, з джерелом у ключі |
+| **`transactions`** | **500 000** | **головна таблиця** |
+
+Перекоси в даних навмисні — на рівномірному розподілі `EXPLAIN` нічого не покаже:
+
+| Поле | Розподіл |
+|---|---|
+| `status` | `posted` 97.02% · `pending` 2.18% · `failed` 0.80% |
+| `type` | `expense` 55.09% · `income` 20.00% · `transfer_out` 7.98% · `transfer_in` 7.97% · `buy` 6.00% · `sell` 2.96% |
+| `currency` | UAH 71.22% · USD 19.23% · EUR 9.55% |
+| транзакцій на рахунок | степеневий закон: найгарячіший рахунок тримає 12 897 операцій, медіанний — одиниці |
+
+`db/seed.sql` відтворюваний: id, назви рахунків і всі псевдовипадкові рішення — чисті функції від
+номера рядка (`md5` з міткою, нормований у `[0, 1)`), тож літерали в `db/queries/*.sql` не
+«протухають» після пере-сіду.
+
+> Тут була пастка, на якій легко втратити вечір: підзапит `LATERAL (SELECT random() …)`, що не
+> посилається на лічильник `generate_series`, планер обчислює **один раз** на весь `INSERT` — і всі
+> 500 000 рядків виходять однаковими (`type` = `expense`, `status` = `posted`, `currency` = `USD`
+> на всю таблицю). Прив'язка потоків до номера рядка це і виправляє, і робить дані детермінованими.
+
+## Чому суми `bigint`, а курси `numeric`
+
+**Float у схемі немає ніде** — саме це й захищає «Don't Do This». Далі схема свідомо проводить межу
+між сумами й курсами.
+
+**Суми — `bigint` у мінімальних одиницях** (`amount_cents`, `balance_cents`, `quantity_micro`).
+Мінімальна одиниця тут задана валютою об'єктивно, її знає ISO 4217 — це колонка `currency.exponent`.
+Тип фіксованої довжини й pass-by-value дає вужчий рядок і швидше сортування на 500 000 рядків, а
+контракт [`openapi/openapi.yaml`](openapi/openapi.yaml) уже оголошує ці поля як `integer/int64` —
+тож БД і дріт говорять одним типом і конверсія на шві репозиторію не потрібна взагалі.
+
+Запас перевірено, а не припущено:
+
+| | копійок | у гривнях |
+|---|---|---|
+| стеля `bigint` | 9 223 372 036 854 775 807 | **92 233 720 368 547 758 грн** |
+| 1 млн грн | 100 000 000 | запас ще ×92 млрд |
+| держбюджет України ~4 трлн грн | 400 000 000 000 000 | запас **×23 058** |
+
+**Курси й ціни — `numeric(20,10)`.** У курсу природної мінімальної одиниці не існує: будь-який
+множник (`×10⁸`) був би вигаданий і жив би в коментарі, а не в типі. Практичніший аргумент —
+крос-курс `amount × rate_from / rate_to`: на чистих цілих він переповнюється
+(`SELECT 100000000::bigint * 4456160000::bigint * 1000000000::bigint` → `ERROR: bigint out of
+range`), а цілочисельне ділення при цьому мовчки обрізає. З `numeric`-курсом множення саме
+підіймається в numeric (`pg_typeof(bigint * numeric)` → `numeric`, `sum(bigint)` → `numeric`), тож
+переповнення не виникає.
+
+Ціна рішення названа чесно: це шов між двома моделями рівно там, де відбувається множення, і
+правило округлення при конверсії доведеться тримати в одному місці — це вже задача ДЗ #14.
+
+## Курси валют
+
+`fx_rate` тримає курс валюти на дату, `source` входить у первинний ключ:
+
+```sql
+PRIMARY KEY (source, currency, rate_date)
+```
+
+Це не надмірність. НБУ планується як primary, Frankfurter — як backfill історії; без `source` у
+ключі два джерела зіткнулися б на `(currency, rate_date)` і тихо перезаписували одне одного, тобто
+зникла б рівно та можливість звіряти їх між собою, заради якої й береться друге джерело.
+
+Цей самий PK і є єдиним потрібним індексом: `WHERE source = ? AND currency = ? AND rate_date <= ?
+ORDER BY rate_date DESC LIMIT 1` — рівність по двох перших колонках, діапазон по третій, скан
+індексу в зворотному напрямку. Окремий `DESC`-індекс не потрібен, і в `db/indexes.sql` його немає.
+
+`raw_rate` + `raw_units` існують тому, що провайдери котирують не завжди за одну одиницю (JPY — за
+10, HUF — за 100). `rate` — нормалізоване «UAH за 1 одиницю» — це `GENERATED ALWAYS AS … STORED`,
+тож дві колонки фізично не можуть роз'їхатись.
+
+**UAH у `fx_rate` немає взагалі** (`CHECK (currency <> 'UAH')`): це база котирування, вона живе в
+`currency`, а identity-курс обробляється в місці читання. Інакше або тримаєш тисячі рядків зі
+значенням «одиниця», або констрейнт обіцяє валюту, якої в таблиці насправді немає.
+
+### Звідки брати справжні дані
+
+| Джерело | Bulk-вивантаження | Формат |
+|---|---|---|
+| **НБУ** | немає | `…/statdirectory/exchange?json` — усі валюти на сьогодні; `…/exchange?valcode=USD&date=YYYYMMDD&json` — одна валюта на одну дату. Кнопка Export на сайті — це один день з UI. Історію довелось би збирати запит-за-запитом |
+| **Frankfurter** | **є, CSV одним запитом** | `https://api.frankfurter.dev/v2/rates.csv?providers=NBU&base=USD&quotes=UAH&from=1999-01-04` |
+
+Дві дрібниці, які видно тільки з живої відповіді Frankfurter і які легко проґавити:
+
+- заголовок CSV — рівно `date,base,quote,rate`; колонки `provider` там **немає**, тож `source`
+  проставляє завантажувач константою;
+- `base=UAH&quotes=USD` дає **обернений** курс (0.022 USD за 1 UAH). Для рідної орієнтації НБУ
+  («гривень за одиницю») потрібно `base=USD&quotes=UAH` → 44.55. Два `base` в одному запиті не
+  приймаються (`422 invalid currency: USD,EUR`), тож це окремий запит на валюту.
+
+Далі — `COPY fx_rate_staging FROM … WITH (FORMAT csv, HEADER)` і перелив у `fx_rate`.
+
+У `db/seed.sql` курси **синтетичні**: seed мусить відпрацювати офлайн у контейнері грейдера. Але
+порядок величин збігається з живим фідом на вересень 2026 (USD ≈ 44.5, EUR ≈ 51.8), значення
+округлені до 4 знаків, як у справжній відповіді, і згенеровані лише на робочі дні — саме так, як
+публікує НБУ.
+
+### Як додати нову валюту
+
+Через довідник, а не міграцію — заради цього `currency` і зроблено таблицею замість
+`CHECK (currency IN (...))`:
+
+```sql
+INSERT INTO currency (code, numeric_code, exponent, name) VALUES ('PLN', 985, 2, 'Polish zloty');
+```
+
+І все. З `CHECK`-констрейнтом кожна нова валюта означала б міграцію з переписуванням констрейнта —
+а на `transactions` це ще й перевірка всіх 500 000 рядків.
+
+## Індекси — рівно три
+
+| Індекс | Тип | Запит | Розмір |
+|---|---|---|---|
+| `transactions_account_booked_idx` `(account_id, booked_at DESC, id DESC)` | складений | q1 | 28 MB |
+| `transactions_pending_booked_idx` `(booked_at DESC, id) WHERE status = 'pending'` | **partial** | q2 | 448 kB |
+| `accounts_lower_name_idx` `(lower(name))` | **expression** | q3 | 2 256 kB |
+
+Partial-індекс покриває 2.18% таблиці й тому в ~64 рази менший за складений. Expression-індекс
+обов'язковий саме тут: у `WHERE` стоїть `lower(name)`, і індекс по самій колонці `name` планер
+проігнорував би.
+
+Нічого «про запас» не додано — перевірка `pg_stat_user_indexes` із нульовими `idx_scan` показує
+лише індекси, що підпирають PRIMARY KEY і UNIQUE; усі три оптимізаційні використані.
+
+## Результати
+
+| Запит | Що робить | До | Після | Прискорення | Buffers |
+|---|---|---:|---:|---:|---|
+| q1 | виписка по рахунку за квартал | 47.085 мс | **1.293 мс** | **×36** | 9 174 → 53 |
+| q2 | черга операцій у статусі `pending` | 45.231 мс | **2.445 мс** | **×18** | 9 158 → 102 |
+| q3 | пошук рахунку без урахування регістру | 15.920 мс | **0.087 мс** | **×183** | 864 → 4 |
+
+Мілісекунди залежать від навантаження на машину, тому надійніший показник — buffers: вони падають
+у 90–216 разів і від навантаження не залежать узагалі.
+
+Повні виводи `EXPLAIN (ANALYZE, BUFFERS)` до і після, з поясненням кожного плану —
+[`db/OPTIMIZATIONS.md`](db/OPTIMIZATIONS.md).
+
+## Структура ДЗ #12
+
+| Шлях | Призначення |
+|---|---|
+| [`db/schema.sql`](db/schema.sql) | 7 таблиць, 8 FOREIGN KEY, CHECK-констрейнти, GRANT для `invest_app` |
+| [`db/seed.sql`](db/seed.sql) | генерація даних + `VACUUM (ANALYZE)` |
+| [`db/queries/q1.sql`](db/queries/q1.sql) | виписка по рахунку за період (keyset-пагінація) |
+| [`db/queries/q2.sql`](db/queries/q2.sql) | фільтр по статусу `pending` |
+| [`db/queries/q3.sql`](db/queries/q3.sql) | пошук без урахування регістру |
+| [`db/indexes.sql`](db/indexes.sql) | три індекси: складений, partial, expression |
+| [`db/OPTIMIZATIONS.md`](db/OPTIMIZATIONS.md) | 3 пари `EXPLAIN` до/після + пояснення |
+| [`secrets/db_password.example`](secrets/db_password.example) | стартовий дев-пароль ролі `invest_app` |
+
+`db/seed.sql` закінчується саме `VACUUM (ANALYZE)`, а не `ANALYZE`: статистику для планера дає
+`ANALYZE`, але visibility map виставляє тільки `VACUUM` — без неї Index Only Scan усе одно лізе в
+heap, і buffers «після» виходять у рази гірші, ніж могли б.

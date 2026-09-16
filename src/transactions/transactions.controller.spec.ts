@@ -11,7 +11,7 @@ const expense: Transaction = {
   type: 'expense',
   amount_cents: 4599,
   currency: Currency.UAH,
-  occurred_at: '2026-08-20T12:30:00.000Z',
+  booked_at: '2026-08-20T12:30:00.000Z',
   description: 'Coffee',
   instrument_symbol: null,
   quantity_micro: null,
@@ -69,7 +69,7 @@ describe('TransactionsController', () => {
           type: 'expense',
           amount_cents: 4599,
           currency: Currency.UAH,
-          occurred_at: expense.occurred_at,
+          booked_at: expense.booked_at,
         },
       ],
     };

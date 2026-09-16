@@ -146,7 +146,7 @@ paths:
       operationId: listTransactions
       summary: List transactions
       description: >
-        Returns a page of transactions sorted by `occurred_at DESC, id DESC`.
+        Returns a page of transactions sorted by `booked_at DESC, id DESC`.
         Optional `account_id` filter narrows the result to one account.
       tags: [transactions]
       parameters:
@@ -547,7 +547,7 @@ components:
         - type
         - amount_cents
         - currency
-        - occurred_at
+        - booked_at
         - description
         - instrument_symbol
         - quantity_micro
@@ -569,10 +569,10 @@ components:
           example: 4599
         currency:
           $ref: '#/components/schemas/Currency'
-        occurred_at:
+        booked_at:
           type: string
           format: date-time
-          description: When the operation happened in the real world — unlike `created_at`.
+          description: When the operation was booked to the account (ISO 20022 BookingDate) — unlike `created_at`, which is when the record appeared here.
         description:
           type: string
           maxLength: 500
@@ -601,7 +601,7 @@ components:
       type: object
       description: One item in a create-transactions batch.
       additionalProperties: false
-      required: [account_id, type, amount_cents, currency, occurred_at]
+      required: [account_id, type, amount_cents, currency, booked_at]
       properties:
         account_id:
           type: string
@@ -615,7 +615,7 @@ components:
           example: 4599
         currency:
           $ref: '#/components/schemas/Currency'
-        occurred_at:
+        booked_at:
           type: string
           format: date-time
         description:

@@ -41,6 +41,8 @@ export const envSchema = z.object({
    * lives in a file (see DB_PASSWORD_FILE), never in an environment variable.
    */
   DB_URL: z
+    .string()
+    .min(1)
     .url({
       protocol: /^postgres(ql)?$/,
       error: 'must be a postgres:// or postgresql:// URL',

@@ -151,9 +151,9 @@ const catalog = {
     en: 'Amount in cents, always non-negative. Integer only.',
     uk: 'Сума в копійках/центах, завжди невідʼємна. Ціле число.',
   },
-  'dto.transaction.occurredAt': {
-    en: 'When the operation happened in the real world — unlike created_at.',
-    uk: 'Коли операція сталася в реальному світі — на відміну від created_at.',
+  'dto.transaction.bookedAt': {
+    en: 'When the operation was booked to the account (ISO 20022 BookingDate) — unlike created_at, which is when the record appeared here.',
+    uk: 'Коли операцію проведено по рахунку (BookingDate за ISO 20022) — на відміну від created_at, коли зʼявився сам запис.',
   },
   'dto.transaction.quantityMicro': {
     en: 'Instrument quantity × 10^6. 10 shares = 10000000. null for non-investment types.',
