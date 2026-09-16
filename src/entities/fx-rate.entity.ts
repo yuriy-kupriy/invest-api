@@ -45,6 +45,6 @@ export class FxRate {
   })
   rate!: string;
 
-  @CreateDateColumn({ name: 'fetched_at', type: 'timestamptz' })
+  @CreateDateColumn({ name: 'fetched_at', type: 'timestamptz', precision: 3 })
   fetchedAt!: Date;
 }

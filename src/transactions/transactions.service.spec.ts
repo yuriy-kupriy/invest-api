@@ -46,13 +46,13 @@ describe('TransactionsService', () => {
           useValue: {
             findById: jest.fn(),
             findPage: jest.fn(),
-            save: jest.fn((tx: Transaction) => Promise.resolve(tx)),
+            saveMany: jest.fn((batch: Transaction[]) => Promise.resolve(batch)),
           },
         },
         {
           provide: AccountsRepository,
           useValue: {
-            findById: jest.fn(),
+            findByIds: jest.fn(),
             findPage: jest.fn(),
             save: jest.fn(),
             updateBalance: jest.fn(),
@@ -119,7 +119,7 @@ describe('TransactionsService', () => {
 
   describe('create', () => {
     it('saves the batch and decrements balance for expense', async () => {
-      accountsRepo.findById.mockResolvedValue(cashAccount);
+      accountsRepo.findByIds.mockResolvedValue([cashAccount]);
 
       const result = await service.create({
         entries: [
@@ -140,14 +140,16 @@ describe('TransactionsService', () => {
         amount_cents: 1250,
         currency: Currency.UAH,
       });
-      expect(transactionsRepo.save).toHaveBeenCalledTimes(1);
+      expect(transactionsRepo.saveMany).toHaveBeenCalledTimes(1);
       // Third argument is the EntityManager of the surrounding DB transaction —
       // its presence is the point: the balance update shares the batch's rollback.
       expect(accountsRepo.updateBalance).toHaveBeenCalledWith(cashAccount.id, -1250, {});
     });
 
     it('does not save anything when a later entry is invalid', async () => {
-      accountsRepo.findById.mockResolvedValueOnce(cashAccount).mockResolvedValueOnce(undefined);
+      // findByIds resolves the whole batch's unique account_ids in one call —
+      // the missing account simply isn't in the returned array.
+      accountsRepo.findByIds.mockResolvedValue([cashAccount]);
 
       await expect(
         service.create({
@@ -170,12 +172,12 @@ describe('TransactionsService', () => {
         }),
       ).rejects.toThrow(ProblemException);
 
-      expect(transactionsRepo.save).not.toHaveBeenCalled();
+      expect(transactionsRepo.saveMany).not.toHaveBeenCalled();
       expect(accountsRepo.updateBalance).not.toHaveBeenCalled();
     });
 
     it('throws currency-mismatch when entry currency differs from the account', async () => {
-      accountsRepo.findById.mockResolvedValue(cashAccount);
+      accountsRepo.findByIds.mockResolvedValue([cashAccount]);
 
       try {
         await service.create({

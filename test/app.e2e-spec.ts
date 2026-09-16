@@ -101,12 +101,13 @@ describe('invest-api (e2e)', () => {
     expect(second.body.code).toBe('idempotency-key-reuse');
   });
 
-  it('rolls the whole batch back when a later entry fails', async () => {
-    // Entry 2 is a `buy` naming an instrument that does not exist, so
-    // instrument_id stays NULL and the DB CHECK transactions_instrument_matches_type
-    // rejects it — mid-batch, after entry 1 was already written. The point of
-    // the test is that entry 1 must not survive: inserts and balance updates
-    // share one DB transaction.
+  it('writes nothing when a later entry in the batch is rejected', async () => {
+    // Entry 2 is a `buy` naming an instrument that does not exist. The batch is
+    // rejected as a whole, and entry 1 — valid on its own — must not survive it.
+    // Two mechanisms have to hold for that: the unknown symbol is rejected up
+    // front with a 422 (rather than falling through as a NULL instrument_id and
+    // tripping transactions_instrument_matches_type as a 500), and the insert +
+    // balance updates share one DB transaction so nothing lands either way.
     const before = await request(app.getHttpServer()).get(`/accounts/${cashAccountId}`);
     const balanceBefore = before.body.balance_cents;
 
@@ -128,7 +129,10 @@ describe('invest-api (e2e)', () => {
         ],
       });
 
-    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.status).toBe(422);
+    expect(res.headers['content-type']).toContain('application/problem+json');
+    expect(res.body.code).toBe('instrument-not-found');
+    expect(res.body.detail).toContain('NOSUCHTICKER');
 
     const after = await request(app.getHttpServer()).get(`/accounts/${cashAccountId}`);
     expect(after.body.balance_cents).toBe(balanceBefore);
@@ -158,6 +162,35 @@ describe('invest-api (e2e)', () => {
     expect(res.status).toBe(404);
     expect(res.headers['content-type']).toContain('application/problem+json');
     expect(res.body.status).toBe(404);
+  });
+
+  it('labels fx rates as cacheable and mutable lists as not', async () => {
+    // Caching a rate read is safe only because the write path never goes
+    // through the controller — TransactionsRepository reads the rate straight
+    // from the database — so a stale response cannot reach a stored snapshot.
+    const closedDay = await request(app.getHttpServer())
+      .get('/fx-rates/USD/latest')
+      .query({ on: '2026-01-15' });
+    expect(closedDay.status).toBe(200);
+    expect(closedDay.headers['cache-control']).toBe('public, max-age=86400');
+
+    // Today's quote may still be published, and the `on`-less URL is the same
+    // string tomorrow — so this one must stay short.
+    const today = await request(app.getHttpServer()).get('/fx-rates/USD/latest');
+    expect(today.headers['cache-control']).toBe('public, max-age=60');
+
+    // A 404 means "not published yet"; a backfill can turn it into a 200, and
+    // RFC 9111 would otherwise let a cache store it heuristically.
+    const missing = await request(app.getHttpServer())
+      .get('/fx-rates/EUR/latest')
+      .query({ on: '2020-01-01' });
+    expect(missing.status).toBe(404);
+    expect(missing.headers['cache-control']).toBe('no-store');
+
+    for (const path of ['/accounts', '/transactions']) {
+      const listed = await request(app.getHttpServer()).get(path).query({ limit: 2 });
+      expect(listed.headers['cache-control']).toBe('no-store');
+    }
   });
 
   it('answers GET /health without touching the database', async () => {

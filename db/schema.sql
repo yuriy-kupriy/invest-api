@@ -37,7 +37,7 @@ CREATE TABLE users (
   id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
   email        text        NOT NULL UNIQUE CHECK (length(email) BETWEEN 3 AND 254),
   display_name text        NOT NULL CHECK (length(display_name) BETWEEN 1 AND 120),
-  created_at   timestamptz NOT NULL DEFAULT now()
+  created_at   timestamptz(3) NOT NULL DEFAULT now()
 );
 
 CREATE TABLE accounts (
@@ -48,7 +48,7 @@ CREATE TABLE accounts (
   type          text        NOT NULL CHECK (type IN ('cash', 'bank', 'brokerage', 'property')),
   balance_cents bigint      NOT NULL DEFAULT 0,
   is_archived   boolean     NOT NULL DEFAULT false,
-  created_at    timestamptz NOT NULL DEFAULT now(),
+  created_at    timestamptz(3) NOT NULL DEFAULT now(),
 
   -- Redundant on top of the PK alone — it exists so transactions can carry a
   -- composite FK (account_id, currency) and have the database itself, not just
@@ -62,7 +62,7 @@ CREATE TABLE instruments (
   name        text        NOT NULL CHECK (length(name) BETWEEN 1 AND 120),
   asset_class text        NOT NULL CHECK (asset_class IN ('equity', 'etf', 'bond', 'crypto')),
   currency    text        NOT NULL REFERENCES currency(code),
-  created_at  timestamptz NOT NULL DEFAULT now()
+  created_at  timestamptz(3) NOT NULL DEFAULT now()
 );
 
 CREATE TABLE categories (
@@ -101,7 +101,7 @@ CREATE TABLE fx_rate (
   raw_rate   numeric(20,10) NOT NULL CHECK (raw_rate > 0),
   raw_units  integer        NOT NULL DEFAULT 1 CHECK (raw_units > 0),
   rate       numeric(20,10) GENERATED ALWAYS AS ((raw_rate / raw_units)::numeric(20,10)) STORED,
-  fetched_at timestamptz    NOT NULL DEFAULT now(),
+  fetched_at timestamptz(3) NOT NULL DEFAULT now(),
   PRIMARY KEY (source, currency, rate_date),
   CONSTRAINT fx_rate_base_is_not_quoted CHECK (currency <> 'UAH')
 );
@@ -130,9 +130,9 @@ CREATE TABLE transactions (
   fx_rate        numeric(20,10) NOT NULL DEFAULT 1 CHECK (fx_rate > 0),
   quantity_micro bigint         CHECK (quantity_micro > 0),
   unit_price     numeric(20,10) CHECK (unit_price > 0),
-  booked_at      timestamptz    NOT NULL,
+  booked_at      timestamptz(3) NOT NULL,
   description    text           CHECK (length(description) <= 500),
-  created_at     timestamptz    NOT NULL DEFAULT now(),
+  created_at     timestamptz(3) NOT NULL DEFAULT now(),
 
   -- An investment operation without an instrument — or vice versa — is a lie in the data.
   CONSTRAINT transactions_instrument_matches_type

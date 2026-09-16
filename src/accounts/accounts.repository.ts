@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, Repository } from 'typeorm';
+import { EntityManager, In, Repository } from 'typeorm';
 import { Account as AccountEntity } from '@/entities/account.entity';
 import { Account, AccountType } from '@/domain/account';
 import { Currency } from '@/domain/currency';
@@ -41,6 +41,19 @@ export class AccountsRepository {
   async findById(id: string, manager?: EntityManager): Promise<Account | undefined> {
     const entity = await this.repoFor(manager).findOne({ where: { id } });
     return entity ? toDomain(entity) : undefined;
+  }
+
+  /**
+   * Batched form of `findById`: a create-transactions batch of up to 100
+   * entries can repeat the same account_id, so this resolves the whole batch
+   * with one `WHERE id IN (...)` instead of one SELECT per entry.
+   */
+  async findByIds(ids: string[], manager?: EntityManager): Promise<Account[]> {
+    if (ids.length === 0) {
+      return [];
+    }
+    const entities = await this.repoFor(manager).find({ where: { id: In(ids) } });
+    return entities.map(toDomain);
   }
 
   /** Keyset page ordered by (created_at DESC, id DESC) — the cursor's sort key is created_at. */

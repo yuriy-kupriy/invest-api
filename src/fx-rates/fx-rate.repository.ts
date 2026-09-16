@@ -9,6 +9,13 @@ export function toDateOnly(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
+/** Dedup key for a (currency, date) rate lookup — same shape a caller needs
+ * to batch several transactions' rate resolutions into one query per unique
+ * pair instead of one per transaction. */
+export function fxRateKey(currency: string, on: Date): string {
+  return `${currency}:${toDateOnly(on)}`;
+}
+
 @Injectable()
 export class FxRateRepository {
   constructor(@InjectRepository(FxRate) private readonly repo: Repository<FxRate>) {}

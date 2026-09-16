@@ -306,10 +306,28 @@ paths:
       responses:
         '200':
           description: Effective fx rate
+          headers:
+            Cache-Control:
+              description: >
+                Freshness of this answer. A closed day (`on` in the past) can only
+                change if a provider publishes a correction, so it is cacheable for
+                a day; today's rate may still be published, so it is cacheable for a
+                minute. Caching reads here is safe because the write path does not
+                use this endpoint — a transaction's `fx_rate` snapshot is read
+                straight from the database.
+              schema:
+                type: string
+                example: public, max-age=86400
+            ETag:
+              description: Validator for conditional requests — send it back in `If-None-Match`.
+              schema:
+                type: string
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/FxRate'
+        '304':
+          description: Not modified — the `If-None-Match` validator still matches, no body is sent
         '400':
           $ref: '#/components/responses/BadRequest'
         '404':

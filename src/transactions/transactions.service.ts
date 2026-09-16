@@ -71,16 +71,26 @@ export class TransactionsService {
    * is inside it too, so an account cannot be deleted between the check and
    * the insert. Any ProblemException thrown in the callback rolls the whole
    * thing back and propagates unchanged.
+   *
+   * Accounts are resolved once for the whole batch (`findByIds`) instead of
+   * once per entry — a batch of up to 100 entries commonly repeats the same
+   * few account_ids — and the write side (`saveMany`) resolves instrument
+   * symbols and fx rates per unique value across the batch, not per entry.
    */
   async create(input: CreateTransactionsDto): Promise<TransactionBatch> {
     const now = new Date().toISOString();
 
     const created = await this.dataSource.transaction(async (manager) => {
+      const accountIds = [...new Set(input.entries.map((entry) => entry.account_id))];
+      const accountById = new Map(
+        (await this.accountsRepo.findByIds(accountIds, manager)).map((account) => [account.id, account]),
+      );
+
       const batch: Transaction[] = [];
       const deltas = new Map<string, number>();
 
       for (const entry of input.entries) {
-        const account = await this.accountsRepo.findById(entry.account_id, manager);
+        const account = accountById.get(entry.account_id);
         if (!account) {
           throw problem(
             HttpStatus.NOT_FOUND,
@@ -93,6 +103,19 @@ export class TransactionsService {
             HttpStatus.UNPROCESSABLE_ENTITY,
             'currency-mismatch',
             `currency ${entry.currency} does not match the currency of account ${account.id} (${account.currency})`,
+          );
+        }
+        // Mirrors the transactions_instrument_matches_type CHECK. Without this
+        // the constraint still catches it, but as a 500 with a raw Postgres
+        // constraint name instead of a 422 naming the offending entry.
+        const needsInstrument = entry.type === 'buy' || entry.type === 'sell';
+        if (needsInstrument !== Boolean(entry.instrument_symbol)) {
+          throw problem(
+            HttpStatus.UNPROCESSABLE_ENTITY,
+            'instrument-type-mismatch',
+            needsInstrument
+              ? `type ${entry.type} requires instrument_symbol`
+              : `instrument_symbol is only valid for buy and sell, not ${entry.type}`,
           );
         }
 
@@ -114,9 +137,7 @@ export class TransactionsService {
         );
       }
 
-      for (const tx of batch) {
-        await this.transactionsRepo.save(tx, manager);
-      }
+      await this.transactionsRepo.saveMany(batch, manager);
       for (const [id, delta] of deltas) {
         await this.accountsRepo.updateBalance(id, delta, manager);
       }

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Header, HttpCode, HttpStatus, Param, Post, Query } from '@nestjs/common';
 import {
   ApiBadRequestResponse,
   ApiConflictResponse,
@@ -30,6 +30,10 @@ export class TransactionsController {
   constructor(private readonly transactionsService: TransactionsService) {}
 
   @Get()
+  // A cursor page of a table that is written to constantly; without this a
+  // proxy is free to apply heuristic freshness (RFC 9111) and hand a client
+  // someone else's stale page. Unlike fx rates, there is no stable answer to cache.
+  @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: i18n('transactions.list.summary') })
   @ApiOkResponse({ type: TransactionPageDto })
   @ApiBadRequestResponse(problemResponse(i18n('transactions.list.badRequest')))

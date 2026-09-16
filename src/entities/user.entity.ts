@@ -14,7 +14,7 @@ export class User {
   @Column({ name: 'display_name', type: 'text' })
   displayName!: string;
 
-  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz', precision: 3 })
   createdAt!: Date;
 
   @OneToMany(() => Account, (account) => account.user)

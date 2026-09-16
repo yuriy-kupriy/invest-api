@@ -1,12 +1,14 @@
-import { Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, Repository } from 'typeorm';
+import { EntityManager, In, Repository } from 'typeorm';
 import { Instrument } from '@/entities/instrument.entity';
 import { Transaction as TransactionEntity } from '@/entities/transaction.entity';
+import { fxRateKey } from '@/fx-rates/fx-rate.repository';
 import { FxRatesService } from '@/fx-rates/fx-rates.service';
 import { Currency } from '@/domain/currency';
 import { Transaction, TransactionType } from '@/domain/transaction';
 import { CursorPayload } from '@/shared/pagination';
+import { problem } from '@/shared/problem.exception';
 
 function toDomain(entity: TransactionEntity): Transaction {
   return {
@@ -73,34 +75,72 @@ export class TransactionsRepository {
     return entities.map(toDomain);
   }
 
-  async save(transaction: Transaction, manager?: EntityManager): Promise<Transaction> {
-    const repo = this.repoFor(manager);
-    const instruments = manager ? manager.getRepository(Instrument) : this.instrumentsRepo;
-    const bookedAt = new Date(transaction.booked_at);
+  /**
+   * Bulk write for a create-transactions batch (up to 100 entries). Where the
+   * old per-row `save()` did, per transaction, one instrument lookup + one fx
+   * rate lookup + one INSERT — up to 3N round trips for N entries, most of
+   * them repeating the same instrument symbol or the same (currency, date)
+   * pair — this resolves both lookups once per unique value across the whole
+   * batch and inserts every row in one multi-row INSERT.
+   */
+  async saveMany(transactions: Transaction[], manager: EntityManager): Promise<Transaction[]> {
+    if (transactions.length === 0) {
+      return transactions;
+    }
 
-    const [instrument, fxRate] = await Promise.all([
-      transaction.instrument_symbol
-        ? instruments.findOne({ where: { symbol: transaction.instrument_symbol } })
-        : null,
-      this.fxRatesService.getEffectiveRate(transaction.currency, bookedAt, manager),
-    ]);
+    const instruments = manager.getRepository(Instrument);
+    const symbols = [
+      ...new Set(
+        transactions
+          .map((tx) => tx.instrument_symbol)
+          .filter((symbol): symbol is string => symbol !== null),
+      ),
+    ];
+    const instrumentRows = symbols.length
+      ? await instruments.find({ where: { symbol: In(symbols) } })
+      : [];
+    const instrumentIdBySymbol = new Map(instrumentRows.map((i) => [i.symbol, i.id]));
 
-    const entity = repo.create({
-      id: transaction.id,
-      accountId: transaction.account_id,
-      instrumentId: instrument?.id ?? null,
-      categoryId: null,
-      currency: transaction.currency,
-      type: transaction.type as TransactionType,
-      status: 'posted',
-      amountCents: transaction.amount_cents,
-      fxRate,
-      quantityMicro: transaction.quantity_micro,
-      unitPrice: null,
-      bookedAt,
-      description: transaction.description,
+    // A symbol that doesn't resolve (typo, or lower case — the lookup is
+    // case-sensitive and the column CHECK requires upper) must be reported as
+    // the client error it is. Left to fall through as a NULL instrument_id it
+    // would instead trip transactions_instrument_matches_type and surface as a
+    // 500 quoting the constraint name.
+    const unknown = symbols.filter((symbol) => !instrumentIdBySymbol.has(symbol));
+    if (unknown.length > 0) {
+      throw problem(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        'instrument-not-found',
+        `unknown instrument_symbol: ${unknown.join(', ')}`,
+      );
+    }
+
+    const fxRateByKey = await this.fxRatesService.getEffectiveRates(
+      transactions.map((tx) => ({ currency: tx.currency, on: new Date(tx.booked_at) })),
+      manager,
+    );
+
+    const rows = transactions.map((tx) => {
+      const bookedAt = new Date(tx.booked_at);
+      return {
+        id: tx.id,
+        accountId: tx.account_id,
+        instrumentId: tx.instrument_symbol ? instrumentIdBySymbol.get(tx.instrument_symbol) ?? null : null,
+        categoryId: null,
+        currency: tx.currency,
+        type: tx.type as TransactionType,
+        status: 'posted' as const,
+        amountCents: tx.amount_cents,
+        fxRate: fxRateByKey.get(fxRateKey(tx.currency, bookedAt)),
+        quantityMicro: tx.quantity_micro,
+        unitPrice: null,
+        bookedAt,
+        description: tx.description,
+      };
     });
-    await repo.save(entity);
-    return transaction;
+
+    await this.repoFor(manager).createQueryBuilder().insert().into(TransactionEntity).values(rows).execute();
+
+    return transactions;
   }
 }

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query, Res } from '@nestjs/common';
+import { Body, Controller, Get, Header, HttpCode, HttpStatus, Param, Post, Query, Res } from '@nestjs/common';
 import {
   ApiBadRequestResponse,
   ApiCreatedResponse,
@@ -28,6 +28,9 @@ export class AccountsController {
   constructor(private readonly accountsService: AccountsService) {}
 
   @Get()
+  // Balances change on every posted transaction — nothing here is worth a
+  // cache, and an unlabelled response invites heuristic freshness in proxies.
+  @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: i18n('accounts.list.summary') })
   @ApiOkResponse({ type: AccountPageDto })
   @ApiBadRequestResponse(problemResponse(i18n('accounts.list.badRequest')))

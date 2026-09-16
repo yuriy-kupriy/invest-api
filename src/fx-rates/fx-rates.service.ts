@@ -1,7 +1,7 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { EntityManager } from 'typeorm';
 import { problem } from '@/shared/problem.exception';
-import { FxRateRepository, toDateOnly } from './fx-rate.repository';
+import { FxRateRepository, fxRateKey, toDateOnly } from './fx-rate.repository';
 
 export interface EffectiveFxRate {
   currency: string;
@@ -15,9 +15,9 @@ export class FxRatesService {
   constructor(private readonly fxRateRepo: FxRateRepository) {}
 
   /**
-   * Used on the write path (`TransactionsRepository.save()`): a missing rate
-   * there means the request as given can't be completed, hence 422 — the same
-   * status `transactions.service.ts` already uses for `currency-mismatch`.
+   * Used on the write path (`TransactionsRepository.saveMany()`): a missing
+   * rate there means the request as given can't be completed, hence 422 — the
+   * same status `transactions.service.ts` already uses for `currency-mismatch`.
    */
   async getEffectiveRate(currency: string, on: Date, manager?: EntityManager): Promise<string> {
     if (currency === 'UAH') {
@@ -32,6 +32,29 @@ export class FxRatesService {
       );
     }
     return row.rate;
+  }
+
+  /**
+   * Batched form of `getEffectiveRate` for a create-transactions batch: a
+   * real batch of up to 100 entries typically spans 1-3 distinct
+   * (currency, date) pairs (most entries share their account's currency), so
+   * resolving by unique pair instead of per-entry turns up to 100 rate
+   * lookups into a handful. Returns a map keyed by `fxRateKey(currency, on)`.
+   */
+  async getEffectiveRates(
+    pairs: Array<{ currency: string; on: Date }>,
+    manager?: EntityManager,
+  ): Promise<Map<string, string>> {
+    const unique = new Map<string, { currency: string; on: Date }>();
+    for (const pair of pairs) {
+      unique.set(fxRateKey(pair.currency, pair.on), pair);
+    }
+
+    const result = new Map<string, string>();
+    for (const [key, { currency, on }] of unique) {
+      result.set(key, await this.getEffectiveRate(currency, on, manager));
+    }
+    return result;
   }
 
   /**

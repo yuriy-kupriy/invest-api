@@ -28,7 +28,7 @@ export class Instrument {
   @JoinColumn({ name: 'currency' })
   currencyRef!: Currency;
 
-  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz', precision: 3 })
   createdAt!: Date;
 
   @OneToMany(() => Transaction, (transaction) => transaction.instrument)

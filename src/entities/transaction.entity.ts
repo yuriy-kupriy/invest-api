@@ -107,12 +107,12 @@ export class Transaction {
   @Column({ name: 'unit_price', type: 'numeric', precision: 20, scale: 10, nullable: true })
   unitPrice!: string | null;
 
-  @Column({ name: 'booked_at', type: 'timestamptz' })
+  @Column({ name: 'booked_at', type: 'timestamptz', precision: 3 })
   bookedAt!: Date;
 
   @Column({ type: 'text', nullable: true })
   description!: string | null;
 
-  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz', precision: 3 })
   createdAt!: Date;
 }

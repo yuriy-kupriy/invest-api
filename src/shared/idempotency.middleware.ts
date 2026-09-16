@@ -80,20 +80,26 @@ export class IdempotencyMiddleware implements NestMiddleware {
     }) as Response['json'];
 
     res.on('finish', () => {
-      // 4xx means the handler rejected the request before or inside its DB
-      // transaction, so nothing was written — releasing the key is correct and
-      // lets the client fix the body and reuse it.
+      // Only a successful response is worth replaying. Any error — 4xx or 5xx —
+      // releases the key so the client can retry, which is the entire purpose
+      // of handing out an idempotency key in the first place.
       //
-      // 5xx is the opposite: the write may already have committed and the
-      // failure happened afterwards (response validation against openapi.yaml
-      // runs after the handler returns). Releasing the key there would let a
-      // blind retry apply the same batch twice, so the error is remembered and
-      // replayed instead.
-      if (res.statusCode < HttpStatus.BAD_REQUEST || res.statusCode >= HttpStatus.INTERNAL_SERVER_ERROR) {
+      // An earlier revision also cached 5xx, reasoning that a write might have
+      // committed before the failure. That traded a rare double-write for a
+      // guaranteed one: a transient 500 (rolled back, nothing written) left the
+      // key unusable for the full 24h TTL, so the operation could never be
+      // completed — and the replay carried an empty body, because error
+      // responses go out through `sendProblem()`/`res.send()` and never pass
+      // through the `res.json` patch below that captures bodies.
+      //
+      // The window that argument worried about is now vanishingly small: the
+      // handler's work is one DB transaction, and the only step left after
+      // COMMIT is serialising the response.
+      if (res.statusCode === HttpStatus.CREATED) {
         store.set(key, {
           state: 'done',
           fingerprint: fp,
-          status: res.statusCode,
+          status: HttpStatus.CREATED,
           body: captured,
           expiresAt: Date.now() + TTL_MS,
         });
