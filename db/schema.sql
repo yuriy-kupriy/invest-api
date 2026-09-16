@@ -48,7 +48,12 @@ CREATE TABLE accounts (
   type          text        NOT NULL CHECK (type IN ('cash', 'bank', 'brokerage', 'property')),
   balance_cents bigint      NOT NULL DEFAULT 0,
   is_archived   boolean     NOT NULL DEFAULT false,
-  created_at    timestamptz NOT NULL DEFAULT now()
+  created_at    timestamptz NOT NULL DEFAULT now(),
+
+  -- Redundant on top of the PK alone — it exists so transactions can carry a
+  -- composite FK (account_id, currency) and have the database itself, not just
+  -- application code, reject a transaction whose currency isn't the account's.
+  UNIQUE (id, currency)
 );
 
 CREATE TABLE instruments (
@@ -135,7 +140,16 @@ CREATE TABLE transactions (
 
   -- A hryvnia operation with a rate other than 1 would mean the snapshot was taken from the wrong currency.
   CONSTRAINT transactions_base_currency_rate_is_one
-    CHECK ((currency = 'UAH') = (fx_rate = 1))
+    CHECK ((currency = 'UAH') = (fx_rate = 1)),
+
+  -- A transaction's currency must be its account's currency. Without this, the
+  -- lone `currency REFERENCES currency(code)` above only checks that the code
+  -- is a real currency, not that it's the right one for this account — a EUR
+  -- operation on a UAH account would pass. ON UPDATE RESTRICT states the other
+  -- half: an account's currency is immutable once it has transactions.
+  CONSTRAINT transactions_currency_matches_account
+    FOREIGN KEY (account_id, currency) REFERENCES accounts (id, currency)
+    ON DELETE CASCADE ON UPDATE RESTRICT
 );
 
 -- The app role is created by db/init.sql the first time the volume comes up.

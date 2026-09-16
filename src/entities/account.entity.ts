@@ -8,6 +8,7 @@ import {
   ManyToOne,
   OneToMany,
   PrimaryGeneratedColumn,
+  Unique,
 } from 'typeorm';
 import { Currency } from './currency.entity';
 import { Transaction } from './transaction.entity';
@@ -19,6 +20,11 @@ export type AccountType = 'cash' | 'bank' | 'brokerage' | 'property';
 @Entity({ name: 'accounts' })
 @Check('accounts_name_length', 'length(name) BETWEEN 1 AND 120')
 @Check('accounts_type_enum', "type IN ('cash', 'bank', 'brokerage', 'property')")
+// Redundant on its own (`id` is already the PK) — it exists so `transactions`
+// can carry a composite FK (account_id, currency) → (id, currency) and have the
+// database, not just the service layer, reject a USD transaction on a UAH
+// account. Declared here so a future migration:generate doesn't drop it.
+@Unique('accounts_id_currency_uk', ['id', 'currency'])
 // Expression index for q3 (case-insensitive lookup by name); the decorator
 // below records this index in entity metadata for migration:generate. The
 // DESC/lower() expression itself is written by hand in the migration.
