@@ -569,6 +569,26 @@ docker compose exec postgres psql -U postgres -d invest
 він живе у `secrets/db_password`, у git його немає, а в репозиторії лежить лише
 [`secrets/db_password.example`](secrets/db_password.example) зі стартовим дев-значенням.
 
+### pgAdmin — GUI для БД (опційно, dev-only)
+
+Не в `docker compose up -d --wait`: грейдеру зайвий контейнер ні до чого, тож піднімається окремим
+[Compose profile](https://docs.docker.com/compose/how-tos/profiles/):
+
+```bash
+docker compose --profile tools up -d pgadmin
+```
+
+Далі — <http://localhost:5050>, без логіну (pgAdmin у desktop-режимі). Сервер **«invest (docker)»**
+вже зареєстрований ([`pgadmin/servers.json`](pgadmin/servers.json)) і під'єднується без жодного
+запиту пароля —
+[`pgadmin/pgpass`](pgadmin/pgpass) містить ті самі дев-креденшели `postgres`/`postgres`, що вже
+відкритим текстом у `docker-compose.yml` вище, тож жодного нового секрету тут немає. Перевірено
+живим підключенням через власний `psycopg` pgAdmin-образу.
+
+`docker compose down -v` (пастка з розділу вище) заразом стирає й `pgadmin_data` — саме
+налаштування pgAdmin (не дані Postgres), тому при наступному підйомі `servers.json` просто
+переімпортується заново, без жодних дій руками.
+
 ## Повний прогін — рівно ці команди
 
 Файли з `db/` подаються в контейнер через stdin, тому нічого монтувати не треба:
