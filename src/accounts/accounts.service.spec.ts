@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { HttpStatus } from '@nestjs/common';
 import { Account } from '@/domain/account';
 import { Currency } from '@/domain/currency';
+import { encodeCursor } from '@/shared/pagination';
 import { ProblemException } from '@/shared/problem.exception';
 import { AccountsRepository } from './accounts.repository';
 import { AccountsService } from './accounts.service';
@@ -36,7 +37,7 @@ describe('AccountsService', () => {
           provide: AccountsRepository,
           useValue: {
             findById: jest.fn(),
-            findAll: jest.fn(),
+            findPage: jest.fn(),
             save: jest.fn((account: Account) => Promise.resolve(account)),
             updateBalance: jest.fn(),
             has: jest.fn(),
@@ -54,13 +55,38 @@ describe('AccountsService', () => {
   });
 
   describe('list', () => {
-    it('returns accounts newest first and a next_cursor when the page is full', async () => {
-      accountsRepo.findAll.mockResolvedValue([cashAccount, brokerageAccount]);
+    // Ordering and cursor filtering now happen in SQL (AccountsRepository.findPage),
+    // so what's left to test here is the page contract: pass the limit down, and
+    // issue a cursor only when the page came back full.
+    it('issues a next_cursor when the page is full', async () => {
+      accountsRepo.findPage.mockResolvedValue([brokerageAccount]);
 
       const page = await service.list(1);
 
+      expect(accountsRepo.findPage).toHaveBeenCalledWith(1, undefined);
       expect(page.items).toEqual([brokerageAccount]);
       expect(page.next_cursor).toEqual(expect.any(String));
+    });
+
+    it('reports no next page when fewer rows than the limit come back', async () => {
+      accountsRepo.findPage.mockResolvedValue([cashAccount, brokerageAccount]);
+
+      const page = await service.list(20);
+
+      expect(page.items).toHaveLength(2);
+      expect(page.next_cursor).toBeNull();
+    });
+
+    it('decodes the incoming cursor and hands it to the repository', async () => {
+      accountsRepo.findPage.mockResolvedValue([]);
+      const cursor = encodeCursor(cashAccount.created_at, cashAccount.id);
+
+      await service.list(20, cursor);
+
+      expect(accountsRepo.findPage).toHaveBeenCalledWith(20, {
+        c: cashAccount.created_at,
+        id: cashAccount.id,
+      });
     });
   });
 

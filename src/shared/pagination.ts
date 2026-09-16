@@ -40,34 +40,8 @@ export function decodeCursor(raw: string): CursorPayload {
   }
 }
 
-export function paginate<T extends { id: string }>(
-  rows: T[],
-  sortKeyOf: (row: T) => string,
-  limit: number,
-  cursor?: string,
-): Page<T> {
-  const sorted = [...rows].sort((a, b) => {
-    const ka = sortKeyOf(a);
-    const kb = sortKeyOf(b);
-    if (ka !== kb) {
-      return ka < kb ? 1 : -1;
-    }
-    return a.id < b.id ? 1 : -1;
-  });
-
-  let page = sorted;
-  if (cursor) {
-    const { c, id } = decodeCursor(cursor);
-    page = sorted.filter((row) => {
-      const k = sortKeyOf(row);
-      return k < c || (k === c && row.id < id);
-    });
-  }
-
-  const items = page.slice(0, limit);
-  const last = items[items.length - 1];
-  return {
-    items,
-    next_cursor: items.length === limit && last ? encodeCursor(sortKeyOf(last), last.id) : null,
-  };
-}
+// Paging itself lives in SQL — see AccountsRepository.findPage() and
+// TransactionsRepository.findPage(), where the cursor becomes a row-value
+// comparison `(sort_key, id) < (:c, :id)` that the HW #12 indexes can serve.
+// Only the cursor's encoding is shared, so that its opacity stays the
+// server's business.
