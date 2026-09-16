@@ -70,6 +70,21 @@ export const envSchema = z.object({
    * instead of `amount_cents`, so the response validator can be caught working.
    */
   DRIFT: z.enum(['0', '1']).default('0'),
+
+  /**
+   * `1` fetches missing fx rates from NBU on startup (only the days after the
+   * last stored one) before the in-memory rate cache is loaded.
+   */
+  FX_SYNC_ON_START: z.enum(['0', '1']).default('1'),
+
+  /** Where the NBU history starts when `fx_rate` has no NBU rows for a currency yet. */
+  FX_BACKFILL_FROM: z.iso.date().default('1999-01-01'),
+
+  /** NBU API origin — overridable so a test or an outage drill can point elsewhere. */
+  NBU_BASE_URL: z.string().url({ protocol: /^https?$/ }).default('https://bank.gov.ua'),
+
+  /** Timeout of one NBU request, in milliseconds. The full history is ~2 MB. */
+  NBU_TIMEOUT_MS: z.coerce.number().int().min(1000).max(300000).default(30000),
 });
 
 export type Env = z.infer<typeof envSchema>;

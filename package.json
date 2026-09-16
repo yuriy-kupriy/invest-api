@@ -25,7 +25,9 @@
     "migrate:revert": "bash scripts/with-secrets.sh dev npx typeorm migration:revert -d dist/data-source.js",
     "seed": "bash scripts/with-secrets.sh dev node dist/seed.js",
     "demo:nplus1": "bash scripts/with-secrets.sh dev node dist/demo-nplus1.js",
-    "report": "bash scripts/with-secrets.sh dev node dist/report.js"
+    "report": "bash scripts/with-secrets.sh dev node dist/report.js",
+    "fx:dump": "bash scripts/fx-rates-snapshot.sh dump",
+    "db:fx-rates": "bash scripts/fx-rates-snapshot.sh load"
   },
   "engines": {
     "node": ">=18"

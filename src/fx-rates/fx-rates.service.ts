@@ -1,6 +1,7 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { EntityManager } from 'typeorm';
 import { problem } from '@/shared/problem.exception';
+import { CachedFxRate, FxRateCache } from './fx-rate.cache';
 import { FxRateRepository, fxRateKey, toDateOnly } from './fx-rate.repository';
 
 export interface EffectiveFxRate {
@@ -12,7 +13,24 @@ export interface EffectiveFxRate {
 
 @Injectable()
 export class FxRatesService {
-  constructor(private readonly fxRateRepo: FxRateRepository) {}
+  constructor(
+    private readonly fxRateRepo: FxRateRepository,
+    private readonly cache: FxRateCache,
+  ) {}
+
+  /**
+   * Memory first, database for anything the cache can't answer
+   * authoritatively (see `FxRateCache.findLatest`). Rates for past days are
+   * write-once history, so the cache is only as stale as an NBU correction to
+   * an already-loaded day — picked up on the next restart's sync.
+   */
+  private async findLatest(
+    currency: string,
+    on: Date,
+    manager?: EntityManager,
+  ): Promise<CachedFxRate | undefined> {
+    return this.cache.findLatest(currency, toDateOnly(on)) ?? (await this.fxRateRepo.findLatest(currency, on, manager));
+  }
 
   /**
    * Used on the write path (`TransactionsRepository.saveMany()`): a missing
@@ -23,7 +41,7 @@ export class FxRatesService {
     if (currency === 'UAH') {
       return '1';
     }
-    const row = await this.fxRateRepo.findLatest(currency, on, manager);
+    const row = await this.findLatest(currency, on, manager);
     if (!row) {
       throw problem(
         HttpStatus.UNPROCESSABLE_ENTITY,
@@ -58,6 +76,32 @@ export class FxRatesService {
   }
 
   /**
+   * How many units of `to` one unit of `from` buys, triangulated through UAH
+   * (`getEffectiveRate(from) / getEffectiveRate(to)`) since `fx_rate` only
+   * ever quotes a currency against UAH, never against another currency
+   * directly. Internal utility only — no endpoint yet. Same `manager`
+   * threading as `getEffectiveRate`/`getEffectiveRates`, so a caller can run
+   * this inside the same transaction it resolves a snapshot rate in.
+   *
+   * The division itself is plain `Number()`, not decimal arithmetic: unlike
+   * `transactions.fx_rate`, this result is never stored or frozen into a
+   * snapshot — it's an ad-hoc computed read — and an IEEE-754 double's ~15-17
+   * significant digits comfortably cover NBU's 4-6. `.toFixed(10)` just
+   * matches `raw_rate`'s `numeric(20,10)` column width for a consistent
+   * string shape.
+   */
+  async getCrossRate(from: string, to: string, on: Date, manager?: EntityManager): Promise<string> {
+    if (from === to) {
+      return '1';
+    }
+    const [fromRate, toRate] = await Promise.all([
+      this.getEffectiveRate(from, on, manager),
+      this.getEffectiveRate(to, on, manager),
+    ]);
+    return (Number(fromRate) / Number(toRate)).toFixed(10);
+  }
+
+  /**
    * Used on the read path (`FxRatesController`): a missing rate there means
    * the resource being asked for doesn't exist, hence 404.
    */
@@ -65,7 +109,7 @@ export class FxRatesService {
     if (currency === 'UAH') {
       return { currency, rate: '1', rateDate: toDateOnly(on), source: 'base' };
     }
-    const row = await this.fxRateRepo.findLatest(currency, on);
+    const row = await this.findLatest(currency, on);
     if (!row) {
       throw problem(
         HttpStatus.NOT_FOUND,
@@ -73,6 +117,6 @@ export class FxRatesService {
         `no fx rate for ${currency} on or before ${toDateOnly(on)}`,
       );
     }
-    return { currency: row.currency, rate: row.rate, rateDate: row.rateDate, source: row.source };
+    return { currency, rate: row.rate, rateDate: row.rateDate, source: row.source };
   }
 }
