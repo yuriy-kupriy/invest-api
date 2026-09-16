@@ -582,8 +582,11 @@ docker compose --profile tools up -d pgadmin
 вже зареєстрований ([`pgadmin/servers.json`](pgadmin/servers.json)) і під'єднується без жодного
 запиту пароля —
 [`pgadmin/pgpass`](pgadmin/pgpass) містить ті самі дев-креденшели `postgres`/`postgres`, що вже
-відкритим текстом у `docker-compose.yml` вище, тож жодного нового секрету тут немає. Перевірено
-живим підключенням через власний `psycopg` pgAdmin-образу.
+відкритим текстом у `docker-compose.yml` вище, тож жодного нового секрету тут немає. Файл
+передається через `PGPASS_FILE`, а не монтується туди, де його читає libpq: git зберігає його з
+правами `0644`, а libpq ігнорує password file з доступом для group/world — зі свіжого клону
+pgAdmin питав би пароль. Entrypoint образу сам копіює його в `/var/lib/pgadmin/.pgpass` з `0600`
+(лише при першій ініціалізації — після зміни `pgpass` треба перестворити том `pgadmin_data`).
 
 `docker compose down -v` (пастка з розділу вище) заразом стирає й `pgadmin_data` — саме
 налаштування pgAdmin (не дані Postgres), тому при наступному підйомі `servers.json` просто

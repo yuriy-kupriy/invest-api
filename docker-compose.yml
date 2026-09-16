@@ -28,7 +28,12 @@ services:
   # start. The "invest (docker)" server is pre-registered
   # (pgadmin/servers.json) and pre-authenticated (pgadmin/pgpass — the same
   # non-secret `postgres`/`postgres` dev superuser as above), so it connects
-  # with no prompts at all.
+  # with no prompts at all. The pgpass goes through PGPASS_FILE rather than
+  # being mounted where libpq reads it: git stores the file as 0644 and libpq
+  # ignores a password file with group/world access, so a fresh clone would
+  # prompt. The entrypoint copies it into /var/lib/pgadmin/.pgpass with 0600.
+  # That copy happens only on first init — after editing pgpass, recreate the
+  # pgadmin_data volume.
   pgadmin:
     image: dpage/pgadmin4:9
     profiles: [tools]
@@ -36,6 +41,7 @@ services:
       PGADMIN_DEFAULT_EMAIL: pgadmin@local.dev
       PGADMIN_DEFAULT_PASSWORD: pgadmin
       PGADMIN_CONFIG_SERVER_MODE: 'False'
+      PGPASS_FILE: /pgpass
     ports:
       - '${PGADMIN_HOST_PORT:-5050}:80'
     volumes:
