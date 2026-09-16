@@ -89,10 +89,12 @@ CREATE TABLE categories (
 -- alternative is either thousands of rows holding the value "one", or a
 -- constraint that promises a UAH row that doesn't actually exist.
 --
--- PK (source, currency, rate_date) is already the index the one access pattern
--- needs: WHERE source=? AND currency=? AND rate_date <= ? ORDER BY rate_date DESC
--- LIMIT 1 — equality on the first two columns, a range on the third, backward
--- index scan.
+-- PK (currency, rate_date, source) is the only index the table needs, and its
+-- column order follows how rates are actually read: the latest rate is
+-- WHERE currency=? AND rate_date <= ? ORDER BY rate_date DESC, source (equality,
+-- then a backward range scan), and the startup cache load reads everything in
+-- currency, rate_date, source order (a plain index scan, no sort). The order
+-- was source-first until the FxRatePrimaryKeyCurrencyFirst migration.
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE TABLE fx_rate (
   source     text           NOT NULL CHECK (length(source) BETWEEN 1 AND 40),
@@ -102,7 +104,7 @@ CREATE TABLE fx_rate (
   raw_units  integer        NOT NULL DEFAULT 1 CHECK (raw_units > 0),
   rate       numeric(20,10) GENERATED ALWAYS AS ((raw_rate / raw_units)::numeric(20,10)) STORED,
   fetched_at timestamptz(3) NOT NULL DEFAULT now(),
-  PRIMARY KEY (source, currency, rate_date),
+  PRIMARY KEY (currency, rate_date, source),
   CONSTRAINT fx_rate_base_is_not_quoted CHECK (currency <> 'UAH')
 );
 

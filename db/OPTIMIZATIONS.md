@@ -291,5 +291,7 @@ docker compose exec -T postgres psql -U postgres -d invest \
 (`idx_scan = 2` — це рівно два теплі прогони EXPLAIN на індекс із замірів вище.)
 
 Під `fx_rate` окремого індексу немає навмисно: складений первинний ключ
-`(source, currency, rate_date)` уже обслуговує єдиний патерн доступу до курсів —
-`WHERE source = ? AND currency = ? AND rate_date <= ? ORDER BY rate_date DESC LIMIT 1`.
+`(currency, rate_date, source)` уже обслуговує обидва патерни доступу до курсів —
+`WHERE currency = ? AND rate_date <= ? ORDER BY rate_date DESC, source LIMIT 1` і повне читання
+в порядку `currency, rate_date, source` для кешу на старті (порядок колонок змінено міграцією
+`FxRatePrimaryKeyCurrencyFirst`, заміри — у ній).

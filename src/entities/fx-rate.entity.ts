@@ -3,8 +3,9 @@ import { Currency } from './currency.entity';
 
 /**
  * A currency's rate on a given date, from a given source. Composite PK
- * (source, currency, rate_date) doubles as the only index this table's one
- * access pattern needs — see db/schema.sql for the full rationale.
+ * (currency, rate_date, source) doubles as the only index the table needs —
+ * see db/schema.sql for the rationale and the FxRatePrimaryKeyCurrencyFirst
+ * migration for the measurements. Primary columns are declared in key order.
  */
 @Entity({ name: 'fx_rate' })
 @Check('fx_rate_source_length', 'length(source) BETWEEN 1 AND 40')
@@ -12,9 +13,6 @@ import { Currency } from './currency.entity';
 @Check('fx_rate_raw_units_positive', 'raw_units > 0')
 @Check('fx_rate_base_is_not_quoted', "currency <> 'UAH'")
 export class FxRate {
-  @PrimaryColumn({ type: 'text' })
-  source!: string;
-
   @PrimaryColumn({ type: 'text' })
   currency!: string;
 
@@ -24,6 +22,9 @@ export class FxRate {
 
   @PrimaryColumn({ name: 'rate_date', type: 'date' })
   rateDate!: string;
+
+  @PrimaryColumn({ type: 'text' })
+  source!: string;
 
   @Column({ name: 'raw_rate', type: 'numeric', precision: 20, scale: 10 })
   rawRate!: string;

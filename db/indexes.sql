@@ -4,9 +4,8 @@
 --
 -- Exactly three indexes for three queries. Nothing "just in case": every extra
 -- index is disk plus a slower INSERT on a 500k-row table. There is deliberately
--- no index under fx_rate — the composite primary key (source, currency,
--- rate_date) already provides it, and it serves the one access pattern rates
--- need.
+-- no index under fx_rate — the composite primary key (currency, rate_date,
+-- source) already serves both ways rates are read.
 
 -- q1 — an account statement for a date range, with keyset pagination.
 -- Column order mirrors the query: equality on account_id, then a range and sort
