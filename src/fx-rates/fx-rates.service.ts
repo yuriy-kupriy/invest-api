@@ -1,4 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
+import { EntityManager } from 'typeorm';
 import { problem } from '@/shared/problem.exception';
 import { FxRateRepository, toDateOnly } from './fx-rate.repository';
 
@@ -18,11 +19,11 @@ export class FxRatesService {
    * there means the request as given can't be completed, hence 422 — the same
    * status `transactions.service.ts` already uses for `currency-mismatch`.
    */
-  async getEffectiveRate(currency: string, on: Date): Promise<string> {
+  async getEffectiveRate(currency: string, on: Date, manager?: EntityManager): Promise<string> {
     if (currency === 'UAH') {
       return '1';
     }
-    const row = await this.fxRateRepo.findLatest(currency, on);
+    const row = await this.fxRateRepo.findLatest(currency, on, manager);
     if (!row) {
       throw problem(
         HttpStatus.UNPROCESSABLE_ENTITY,

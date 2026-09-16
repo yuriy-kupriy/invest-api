@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { LessThanOrEqual, Repository } from 'typeorm';
+import { EntityManager, LessThanOrEqual, Repository } from 'typeorm';
 import { FxRate } from '@/entities/fx-rate.entity';
 
 /** `fx_rate.rate_date` is a `date` column — TypeORM reads/writes it as a plain
@@ -18,8 +18,13 @@ export class FxRateRepository {
    * `rate_date`, several sources — seed data has both `seed` and `seed-alt`)
    * are broken deterministically by `source ASC`, not by insertion order.
    */
-  async findLatest(currency: string, onOrBefore: Date): Promise<FxRate | undefined> {
-    const row = await this.repo.findOne({
+  async findLatest(
+    currency: string,
+    onOrBefore: Date,
+    manager?: EntityManager,
+  ): Promise<FxRate | undefined> {
+    const repo = manager ? manager.getRepository(FxRate) : this.repo;
+    const row = await repo.findOne({
       where: { currency, rateDate: LessThanOrEqual(toDateOnly(onOrBefore)) },
       order: { rateDate: 'DESC', source: 'ASC' },
     });

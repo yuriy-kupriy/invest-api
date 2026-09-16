@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { HttpStatus } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { getDataSourceToken } from '@nestjs/typeorm';
 import { AccountsRepository } from '@/accounts/accounts.repository';
 import { Account } from '@/domain/account';
 import { Currency } from '@/domain/currency';
@@ -44,7 +45,7 @@ describe('TransactionsService', () => {
           provide: TransactionsRepository,
           useValue: {
             findById: jest.fn(),
-            findAll: jest.fn(),
+            findPage: jest.fn(),
             save: jest.fn((tx: Transaction) => Promise.resolve(tx)),
           },
         },
@@ -52,11 +53,19 @@ describe('TransactionsService', () => {
           provide: AccountsRepository,
           useValue: {
             findById: jest.fn(),
-            findAll: jest.fn(),
+            findPage: jest.fn(),
             save: jest.fn(),
             updateBalance: jest.fn(),
             has: jest.fn(),
           },
+        },
+        {
+          // create() runs the whole batch inside dataSource.transaction(); the
+          // stub just invokes the callback with a dummy manager, so the unit
+          // tests still exercise the ordering of reads, saves and balance
+          // updates. Real rollback behaviour is covered by the e2e suite.
+          provide: getDataSourceToken(),
+          useValue: { transaction: jest.fn((cb: (m: unknown) => unknown) => cb({})) },
         },
         {
           // The service only asks the config for DRIFT; snake_case wire format
@@ -83,15 +92,28 @@ describe('TransactionsService', () => {
       await expect(service.list(20, undefined, cashAccount.id)).rejects.toThrow(ProblemException);
     });
 
-    it('filters by account_id when the account exists', async () => {
+    // The account_id filter, the ordering and the cursor are now part of the
+    // SQL query (TransactionsRepository.findPage); the service's remaining job
+    // is to pass them down and to decide whether a next_cursor is due.
+    it('pushes the account_id filter down to the repository', async () => {
       accountsRepo.has.mockResolvedValue(true);
-      transactionsRepo.findAll.mockResolvedValue([expense]);
+      transactionsRepo.findPage.mockResolvedValue([expense]);
 
       const page = await service.list(20, undefined, cashAccount.id);
 
+      expect(transactionsRepo.findPage).toHaveBeenCalledWith(20, undefined, cashAccount.id);
       expect(page.items).toHaveLength(1);
       expect(page.items[0].id).toBe(expense.id);
       expect(page.next_cursor).toBeNull();
+    });
+
+    it('issues a next_cursor when the page comes back full', async () => {
+      accountsRepo.has.mockResolvedValue(true);
+      transactionsRepo.findPage.mockResolvedValue([expense]);
+
+      const page = await service.list(1);
+
+      expect(page.next_cursor).toEqual(expect.any(String));
     });
   });
 
@@ -119,7 +141,9 @@ describe('TransactionsService', () => {
         currency: Currency.UAH,
       });
       expect(transactionsRepo.save).toHaveBeenCalledTimes(1);
-      expect(accountsRepo.updateBalance).toHaveBeenCalledWith(cashAccount.id, -1250);
+      // Third argument is the EntityManager of the surrounding DB transaction —
+      // its presence is the point: the balance update shares the batch's rollback.
+      expect(accountsRepo.updateBalance).toHaveBeenCalledWith(cashAccount.id, -1250, {});
     });
 
     it('does not save anything when a later entry is invalid', async () => {

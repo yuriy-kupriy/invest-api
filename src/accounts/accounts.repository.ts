@@ -1,9 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
 import { Account as AccountEntity } from '@/entities/account.entity';
 import { Account, AccountType } from '@/domain/account';
 import { Currency } from '@/domain/currency';
+import { CursorPayload } from '@/shared/pagination';
 
 /**
  * Accounts created through this API attach to a fixed system user: the HW #9
@@ -28,18 +29,39 @@ function toDomain(entity: AccountEntity): Account {
 export class AccountsRepository {
   constructor(@InjectRepository(AccountEntity) private readonly repo: Repository<AccountEntity>) {}
 
-  async findById(id: string): Promise<Account | undefined> {
-    const entity = await this.repo.findOne({ where: { id } });
+  /**
+   * Every method takes an optional EntityManager so a caller that opened a
+   * transaction (TransactionsService.create) can run inside it instead of on a
+   * separate autocommitted connection.
+   */
+  private repoFor(manager?: EntityManager): Repository<AccountEntity> {
+    return manager ? manager.getRepository(AccountEntity) : this.repo;
+  }
+
+  async findById(id: string, manager?: EntityManager): Promise<Account | undefined> {
+    const entity = await this.repoFor(manager).findOne({ where: { id } });
     return entity ? toDomain(entity) : undefined;
   }
 
-  async findAll(): Promise<Account[]> {
-    const entities = await this.repo.find();
+  /** Keyset page ordered by (created_at DESC, id DESC) — the cursor's sort key is created_at. */
+  async findPage(limit: number, cursor?: CursorPayload): Promise<Account[]> {
+    const qb = this.repo
+      .createQueryBuilder('a')
+      .orderBy('a.createdAt', 'DESC')
+      .addOrderBy('a.id', 'DESC')
+      .take(limit);
+
+    if (cursor) {
+      qb.andWhere('(a.createdAt, a.id) < (:c, :cid)', { c: cursor.c, cid: cursor.id });
+    }
+
+    const entities = await qb.getMany();
     return entities.map(toDomain);
   }
 
-  async save(account: Account): Promise<Account> {
-    const entity = this.repo.create({
+  async save(account: Account, manager?: EntityManager): Promise<Account> {
+    const repo = this.repoFor(manager);
+    const entity = repo.create({
       id: account.id,
       userId: SEED_OWNER_USER_ID,
       currency: account.currency,
@@ -48,15 +70,15 @@ export class AccountsRepository {
       balanceCents: account.balance_cents,
       isArchived: false,
     });
-    await this.repo.save(entity);
+    await repo.save(entity);
     return account;
   }
 
-  async updateBalance(id: string, delta: number): Promise<void> {
-    await this.repo.increment({ id }, 'balanceCents', delta);
+  async updateBalance(id: string, delta: number, manager?: EntityManager): Promise<void> {
+    await this.repoFor(manager).increment({ id }, 'balanceCents', delta);
   }
 
-  async has(id: string): Promise<boolean> {
-    return this.repo.exists({ where: { id } });
+  async has(id: string, manager?: EntityManager): Promise<boolean> {
+    return this.repoFor(manager).exists({ where: { id } });
   }
 }

@@ -80,11 +80,20 @@ export class IdempotencyMiddleware implements NestMiddleware {
     }) as Response['json'];
 
     res.on('finish', () => {
-      if (res.statusCode === HttpStatus.CREATED) {
+      // 4xx means the handler rejected the request before or inside its DB
+      // transaction, so nothing was written — releasing the key is correct and
+      // lets the client fix the body and reuse it.
+      //
+      // 5xx is the opposite: the write may already have committed and the
+      // failure happened afterwards (response validation against openapi.yaml
+      // runs after the handler returns). Releasing the key there would let a
+      // blind retry apply the same batch twice, so the error is remembered and
+      // replayed instead.
+      if (res.statusCode < HttpStatus.BAD_REQUEST || res.statusCode >= HttpStatus.INTERNAL_SERVER_ERROR) {
         store.set(key, {
           state: 'done',
           fingerprint: fp,
-          status: HttpStatus.CREATED,
+          status: res.statusCode,
           body: captured,
           expiresAt: Date.now() + TTL_MS,
         });
