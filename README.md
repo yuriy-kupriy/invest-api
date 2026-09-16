@@ -708,7 +708,7 @@ INSERT INTO currency (code, numeric_code, exponent, name) VALUES ('PLN', 985, 2,
 
 | Індекс | Тип | Запит | Розмір |
 |---|---|---|---|
-| `transactions_account_booked_idx` `(account_id, booked_at DESC, id DESC)` | складений | q1 | 28 MB |
+| `transactions_account_booked_idx` `(account_id, booked_at DESC, id DESC) INCLUDE (type, amount_cents, currency, fx_rate)` | складений + covering (`INCLUDE` додано в ДЗ #13, див. нижче) | q1 | 46 MB |
 | `transactions_pending_booked_idx` `(booked_at DESC, id) WHERE status = 'pending'` | **partial** | q2 | 448 kB |
 | `accounts_lower_name_idx` `(lower(name))` | **expression** | q3 | 2 256 kB |
 
@@ -723,12 +723,15 @@ Partial-індекс покриває 2.18% таблиці й тому в ~64 р
 
 | Запит | Що робить | До | Після | Прискорення | Buffers |
 |---|---|---:|---:|---:|---|
-| q1 | виписка по рахунку за квартал | 47.085 мс | **1.293 мс** | **×36** | 9 174 → 53 |
+| q1 | виписка по рахунку за квартал | 47.085 мс | 1.293 мс | ×36 | 9 174 → 53 |
 | q2 | черга операцій у статусі `pending` | 45.231 мс | **2.445 мс** | **×18** | 9 158 → 102 |
 | q3 | пошук рахунку без урахування регістру | 15.920 мс | **0.087 мс** | **×183** | 864 → 4 |
 
 Мілісекунди залежать від навантаження на машину, тому надійніший показник — buffers: вони падають
 у 90–216 разів і від навантаження не залежать узагалі.
+
+q1 отримав другий крок у ДЗ #13 — `INCLUDE` на тому самому індексі прибрав і ці 53 buffers, див.
+нижче.
 
 Повні виводи `EXPLAIN (ANALYZE, BUFFERS)` до і після, з поясненням кожного плану —
 [`db/OPTIMIZATIONS.md`](db/OPTIMIZATIONS.md).
@@ -929,12 +932,122 @@ npm run db:fixtures
 > парситься `ts-jest`-transform-ом у CJS-режимі Jest) — саме тому в `package.json` версія
 > зафіксована на останньому CJS-релізі.
 
+## Атомарність батчу, keyset у SQL і валютний інваріант
+
+Три речі, які аудит звʼязку `accounts` ↔ `transactions` показав як зламані, і які виправлені тут.
+Сам DDL звʼязку був правильний (FK `account_id NOT NULL` → `accounts(id)` `ON DELETE CASCADE`,
+`transactions` як явна join-entity) — ламався шар поведінки над ним.
+
+**1. `POST /transactions` тепер справді атомарний.** Раніше
+[`TransactionsService.create()`](src/transactions/transactions.service.ts) робив N окремих
+`await save()`, а потім M окремих `updateBalance()` — кожен своїм автокомітом. Спека при цьому
+обіцяла «either every `entries` row is created, or none», і обіцянка була неправдива: падіння на
+другій entry (валюта без курсу → 422, або невідомий `instrument_symbol` → CHECK
+`transactions_instrument_matches_type`) лишало першу в базі. Тепер усе тіло `create()` —
+валідація, вставки, оновлення балансів — виконується всередині одного
+`dataSource.transaction(...)`, а `EntityManager` пробрасується опційним параметром у
+`TransactionsRepository.save()`, `AccountsRepository.findById()/updateBalance()` і
+`FxRatesService.getEffectiveRate()`, щоб усе читалось і писалось в одному снапшоті.
+
+Доказ — e2e-кейс «rolls the whole batch back when a later entry fails»
+([test/app.e2e-spec.ts](test/app.e2e-spec.ts)): батч із двох entries, друга — `buy` з неіснуючим
+тикером; після 4xx баланс рахунку не змінився, а першої entry в базі немає.
+
+Наслідок для Idempotency-Key: звільняти ключ на 4xx тепер **правильно** (нічого не записано, клієнт
+може виправити тіло й повторити з тим самим ключем), а на 5xx — ні: запис міг закомітитись, а
+впасти вже валідація відповіді проти `openapi.yaml`. Тому
+[idempotency.middleware.ts](src/shared/idempotency.middleware.ts) запамʼятовує 5xx і відтворює його
+замість повторного виконання.
+
+**2. Пагінація і фільтр переїхали в SQL.** Було: `findAll()` без `WHERE`/`ORDER BY`/`LIMIT`, далі
+сортування й нарізка сторінки в JavaScript — тобто на 500k рядках із ДЗ #12 кожен запит списку
+читав усю таблицю, а індекси ДЗ #12 були недосяжні з коду застосунку в принципі. Стало:
+`TransactionsRepository.findPage()` / `AccountsRepository.findPage()` із keyset-умовою
+`(booked_at, id) < (:c, :id)` — рівно та форма, під яку зроблено
+`transactions_account_booked_idx (account_id, booked_at DESC, id DESC)`.
+
+Заміряно на 500k рядків (`db/seed.sql`), той самий запит сторінки:
+
+| | План | Buffers |
+|---|---|---:|
+| як було (читання всієї таблиці) | `Seq Scan on transactions` + hash join | 9 090 |
+| як стало (keyset-сторінка, `LIMIT 20`) | **`Index Scan using transactions_account_booked_idx`** | **23** |
+
+Курсор із row-value порівнянням заходить прямо в `Index Cond`, тож друга й наступні сторінки
+коштують стільки ж, скільки перша. `paginate()` із `src/shared/pagination.ts` видалено — лишились
+тільки `encodeCursor`/`decodeCursor`, бо непрозорість курсора й далі справа сервера.
+
+**3. Валютний інваріант тепер у БД, а не лише в сервісі.** Перевірка «валюта транзакції = валюта
+рахунку» жила тільки в `TransactionsService`, тож будь-який інший писач (seed, `psql`, майбутній
+ендпоінт) міг покласти USD-транзакцію на UAH-рахунок — а арифметика балансу додає центи до копійок
+без конверсії. Міграція
+[`AccountCurrencyGuard`](src/migrations/1789230000000-AccountCurrencyGuard.ts) додає складений FK:
+
+```sql
+ALTER TABLE accounts ADD CONSTRAINT accounts_id_currency_uk UNIQUE (id, currency);
+ALTER TABLE transactions ADD CONSTRAINT transactions_currency_matches_account
+  FOREIGN KEY (account_id, currency) REFERENCES accounts (id, currency)
+  ON DELETE CASCADE ON UPDATE RESTRICT;
+```
+
+Перевірка — прямий `INSERT` повз застосунок:
+
+```bash
+docker compose exec -T postgres psql -U postgres -d invest -c "
+INSERT INTO transactions (account_id, currency, type, status, amount_cents, fx_rate, booked_at)
+VALUES ('11111111-1111-4111-8111-111111111111', 'USD', 'expense', 'posted', 100, 41.5, now());"
+# ERROR: violates foreign key constraint "transactions_currency_matches_account"
+```
+
+`ON UPDATE RESTRICT` — це друга половина правила: валюта рахунку незмінна, поки в нього є
+транзакції. Обидва сіди (`db/seed.sql` з 500k рядків і `src/seed.ts`) сумісні з констрейнтом без
+правок — вони й раніше брали валюту транзакції з рахунку; перевірено прогоном `db/seed.sql` на щойно
+промігрованій базі.
+
+Той самий інваріант доданий і в сам [`db/schema.sql`](db/schema.sql) (`UNIQUE (id, currency)` на
+`accounts`, `transactions_currency_matches_account` на `transactions`) — до цього артефакт ДЗ #12
+і жива міграція розходились: у міграції правило вже було, у сирому SQL його не існувало.
+
+> ⚠️ Для майбутніх `migration:generate`: складений FK декораторами не виражається, тож генератор
+> може запропонувати `DROP CONSTRAINT "transactions_currency_matches_account"` — цей рядок зі
+> згенерованої міграції треба видалити. UNIQUE безпечний: він оголошений на entity через
+> `@Unique('accounts_id_currency_uk', ['id', 'currency'])`.
+
+## Ще далі — INCLUDE замість Index Scan
+
+`db/indexes.sql:15` — `transactions_account_booked_idx` покривав ключем лише 3 з 7 колонок, які
+бере `q1.sql` (`type`, `amount_cents`, `currency`, `fx_rate` лишались поза індексом), тож навіть
+після ДЗ #12 кожен рядок сторінки коштував один heap-візит — `Index Scan`, не `Index Only Scan`.
+
+Міграція [`TransactionsAccountBookedIndexCovering`](src/migrations/1789240000000-TransactionsAccountBookedIndexCovering.ts)
+перестворює той самий індекс з `INCLUDE (type, amount_cents, currency, fx_rate)`
+(Postgres не має `ALTER INDEX ... ADD INCLUDE`, тому `up()`/`down()` — це `DROP INDEX` + `CREATE
+INDEX`); той самий рядок доданий і в [`db/indexes.sql`](db/indexes.sql).
+
+Заміряно на тих самих 500k рядків (`db/seed.sql`), той самий `q1.sql`:
+
+| | План | Buffers | Час |
+|---|---|---:|---:|
+| до ДЗ #12 (без індексу) | `Seq Scan` | 9 174 | 47.085 мс |
+| після ДЗ #12 (індекс без `INCLUDE`) | `Index Scan` | 53 | 1.293 мс |
+| після ДЗ #13 (`INCLUDE`) | **`Index Only Scan`, Heap Fetches: 0** | **5** | **0.217 мс** |
+
+Індекс важчає з 28 MB до 46 MB — payload чотирьох колонок дублюється в кожному листковому записі;
+свідома плата, бо `q1` — найгарячіший із трьох запитів. Повний план — у
+[`db/OPTIMIZATIONS.md`](db/OPTIMIZATIONS.md#ще-далі--include-замість-index-scan).
+
+**Свідомо не чіпали** (теми ДЗ #14/#15): `balance_cents` лишається денормалізованим значенням без
+звірки з сумою транзакцій (`opening_balance_cents` пишеться без відповідної транзакції, тож
+інваріанта, який можна було б перевірити, просто не існує); ноги переказу не звʼязані між собою
+(`transfer_id` немає); власник рахунку — константа `SEED_OWNER_USER_ID`, і жоден шлях читання не
+фільтрує за користувачем.
+
 ## Структура ДЗ #13
 
 | Шлях | Призначення |
 |---|---|
 | [`src/entities/`](src/entities/) | 7 entities зі схеми ДЗ #12, relations, `@Check`, `@Index` |
-| [`src/migrations/`](src/migrations/) | згенерована й вручну допрацьована початкова міграція |
+| [`src/migrations/`](src/migrations/) | початкова міграція + `AccountCurrencyGuard` (складений FK) + `TransactionsAccountBookedIndexCovering` (`INCLUDE`) |
 | [`src/data-source.ts`](src/data-source.ts) | `DataSource` з `synchronize: false`, підключення з `process.env` |
 | [`src/seed.ts`](src/seed.ts) | детермінований ідемпотентний seed |
 | [`src/demo-nplus1.ts`](src/demo-nplus1.ts) | N+1 «до/після» з лічильником SQL-запитів |
