@@ -193,6 +193,26 @@ describe('invest-api (e2e)', () => {
     }
   });
 
+  it('serves currencies from the lookup table', async () => {
+    const list = await request(app.getHttpServer()).get('/currencies');
+    expect(list.status).toBe(200);
+    expect(list.body).toEqual(
+      expect.arrayContaining([{ code: 'UAH', numeric_code: 980, exponent: 2, name: 'Ukrainian hryvnia' }]),
+    );
+
+    const found = await request(app.getHttpServer()).get('/currencies/USD');
+    expect(found.status).toBe(200);
+    expect(found.body).toEqual({ code: 'USD', numeric_code: 840, exponent: 2, name: 'United States dollar' });
+
+    // Well-formed but not in the table: 404, not a validation 400.
+    const missing = await request(app.getHttpServer()).get('/currencies/ZZZ');
+    expect(missing.status).toBe(404);
+    expect(missing.headers['content-type']).toContain('application/problem+json');
+
+    const malformed = await request(app.getHttpServer()).get('/currencies/usd');
+    expect(malformed.status).toBe(400);
+  });
+
   it('answers GET /health without touching the database', async () => {
     const res = await request(app.getHttpServer()).get('/health');
 

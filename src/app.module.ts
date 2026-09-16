@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { APP_FILTER } from '@nestjs/core';
 import { AccountsModule } from '@/accounts/accounts.module';
 import { validateEnv } from '@/config/env.validation';
+import { CurrenciesModule } from '@/currencies/currencies.module';
 import { DbModule } from '@/db/db.module';
 import { FxRatesModule } from '@/fx-rates/fx-rates.module';
 import { HealthModule } from '@/health/health.module';
@@ -23,6 +24,7 @@ import { TransactionsModule } from '@/transactions/transactions.module';
     DbModule,
     HealthModule,
     AccountsModule,
+    CurrenciesModule,
     FxRatesModule,
     TransactionsModule,
   ],

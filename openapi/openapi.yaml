@@ -43,6 +43,8 @@ tags:
     description: Health — liveness and database readiness
   - name: fx-rates
     description: FX rates — currency rate lookups backing transaction snapshots
+  - name: currencies
+    description: Currencies — the ISO 4217 lookup table accounts, transactions, and fx-rates read from
 
 paths:
   /accounts:
@@ -335,6 +337,72 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /currencies:
+    get:
+      operationId: listCurrencies
+      summary: List currencies
+      description: >
+        Every row of the `currency` lookup table — the reference data behind
+        accounts, transactions, and fx-rates. Small and rarely changed (new
+        rows come from the seed script or a direct `INSERT`, not this API),
+        so unlike `/accounts` and `/transactions` this is a plain array, not a
+        paginated page.
+      tags: [currencies]
+      responses:
+        '200':
+          description: All currencies, ordered by code
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: public, max-age=3600
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CurrencyInfo'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /currencies/{code}:
+    get:
+      operationId: getCurrency
+      summary: Get currency
+      description: >
+        Looks the code up in the `currency` table directly rather than
+        against the `Currency` enum other endpoints validate against — a code
+        can exist here before it's ever added to that enum (see
+        `CurrencyInfo` in the domain layer).
+      tags: [currencies]
+      parameters:
+        - name: code
+          in: path
+          required: true
+          description: ISO 4217 alphabetic code.
+          schema:
+            type: string
+            pattern: '^[A-Z]{3}$'
+            example: USD
+      responses:
+        '200':
+          description: Currency
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: public, max-age=3600
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrencyInfo'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /health:
     get:
       operationId: livenessProbe
@@ -599,6 +667,36 @@ components:
           NZD, PLN, RON, RSD, SAR, SEK, SGD, THB, TND, TRY, USD, VND, ZAR,
         ]
       example: UAH
+
+    CurrencyInfo:
+      type: object
+      description: One row of the `currency` lookup table.
+      required: [code, numeric_code, exponent, name]
+      properties:
+        code:
+          type: string
+          pattern: '^[A-Z]{3}$'
+          description: ISO 4217 alphabetic code.
+          example: USD
+        numeric_code:
+          type: integer
+          minimum: 1
+          maximum: 999
+          description: ISO 4217 numeric code.
+          example: 840
+        exponent:
+          type: integer
+          minimum: 0
+          maximum: 6
+          description: >
+            Number of digits after the decimal point in the minor unit
+            (2 for cents, 0 for JPY, 3 for TND).
+          example: 2
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+          example: United States dollar
 
     Transaction:
       type: object

@@ -20,6 +20,8 @@ export function setupSwagger(app: INestApplication, port: number): void {
     .addTag('accounts', i18n('tags.accounts'))
     .addTag('transactions', i18n('tags.transactions'))
     .addTag('health', i18n('tags.health'))
+    .addTag('fx-rates', i18n('tags.fxRates'))
+    .addTag('currencies', i18n('tags.currencies'))
     .build();
 
   const document = SwaggerModule.createDocument(app, config, {

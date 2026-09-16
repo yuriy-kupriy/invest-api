@@ -52,3 +52,14 @@ export enum Currency {
   VND = 'VND',
   ZAR = 'ZAR',
 }
+
+/**
+ * One row of the `currency` table. `code` is a plain string, not `Currency`:
+ * a row can be INSERTed before the enum above is widened to match.
+ */
+export interface CurrencyInfo {
+  code: string;
+  numeric_code: number;
+  exponent: number;
+  name: string;
+}

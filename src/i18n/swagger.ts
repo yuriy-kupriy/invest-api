@@ -179,6 +179,10 @@ const catalog = {
     en: 'FX rates — currency rate lookups backing transaction snapshots',
     uk: 'Курси валют — довідка по курсах, якими знімки на транзакціях',
   },
+  'tags.currencies': {
+    en: 'Currencies — the ISO 4217 lookup table accounts, transactions, and fx-rates read from',
+    uk: 'Валюти — довідник ISO 4217, з якого читають рахунки, транзакції й курси',
+  },
   'fxRates.get.summary': {
     en: 'Get latest fx rate',
     uk: 'Отримати останній курс валюти',
@@ -194,6 +198,34 @@ const catalog = {
   'dto.fxRate.on': {
     en: 'Resolve the rate as of this date (defaults to today). The latest rate on or before it is returned.',
     uk: 'Курс на цю дату (за замовчуванням — сьогодні). Повертається останній курс на цю дату або раніше.',
+  },
+  'currencies.list.summary': {
+    en: 'List currencies',
+    uk: 'Список валют',
+  },
+  'currencies.get.summary': {
+    en: 'Get currency',
+    uk: 'Отримати валюту',
+  },
+  'currencies.get.badRequest': {
+    en: 'code is not a 3-letter uppercase ISO 4217 code',
+    uk: 'code не є 3-літерним кодом ISO 4217 у верхньому регістрі',
+  },
+  'currencies.get.notFound': {
+    en: 'No currency with this code',
+    uk: 'Валюти з таким кодом немає',
+  },
+  'dto.currency.code': {
+    en: 'ISO 4217 alphabetic code.',
+    uk: 'Літерний код ISO 4217.',
+  },
+  'dto.currency.numericCode': {
+    en: 'ISO 4217 numeric code.',
+    uk: 'Числовий код ISO 4217.',
+  },
+  'dto.currency.exponent': {
+    en: 'Number of digits after the decimal point in the minor unit (2 for cents, 0 for JPY, 3 for TND).',
+    uk: 'Кількість знаків після коми в мінорній одиниці (2 для копійок/центів, 0 для JPY, 3 для TND).',
   },
   'health.liveness.summary': {
     en: 'Liveness probe',
