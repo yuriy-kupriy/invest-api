@@ -26,13 +26,16 @@ export class Currency {
   @Column({ type: 'text' })
   name!: string;
 
-  @OneToMany(() => Account, (account) => account.currency)
+  // The inverse side must name the relation property (`currencyRef`), not the
+  // plain `currency` text column that backs it — pointing at the column leaves
+  // TypeORM with a relation it cannot resolve.
+  @OneToMany(() => Account, (account) => account.currencyRef)
   accounts?: Account[];
 
-  @OneToMany(() => Instrument, (instrument) => instrument.currency)
+  @OneToMany(() => Instrument, (instrument) => instrument.currencyRef)
   instruments?: Instrument[];
 
-  @OneToMany(() => Transaction, (transaction) => transaction.currency)
+  @OneToMany(() => Transaction, (transaction) => transaction.currencyRef)
   transactions?: Transaction[];
 
   @OneToMany(() => FxRate, (fxRate) => fxRate.currencyRef)
