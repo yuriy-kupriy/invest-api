@@ -184,8 +184,8 @@ const catalog = {
     uk: 'Отримати останній курс валюти',
   },
   'fxRates.get.badRequest': {
-    en: 'currency is not one of UAH/USD/EUR, or on is not a valid date',
-    uk: 'currency не UAH/USD/EUR, або on — некоректна дата',
+    en: 'currency is not a supported ISO 4217 code, or on is not a valid date',
+    uk: 'currency не підтримується, або on — некоректна дата',
   },
   'fxRates.get.notFound': {
     en: 'No fx rate on or before the given date for this currency',

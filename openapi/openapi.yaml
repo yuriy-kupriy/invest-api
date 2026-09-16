@@ -590,8 +590,14 @@ components:
     Currency:
       type: string
       description: |
-        Account or transaction currency. Currently limited to `UAH`, `USD`, and `EUR`.
-      enum: [UAH, USD, EUR]
+        Account or transaction currency, or a currency to resolve an fx rate for.
+        `UAH` plus every fiat currency the NBU API quotes.
+      enum:
+        [
+          UAH, AED, AUD, AZN, BDT, CAD, CHF, CNY, CZK, DKK, DZD, EGP, EUR, GBP,
+          GEL, HKD, HUF, IDR, ILS, INR, JPY, KRW, KZT, LBP, MDL, MXN, MYR, NOK,
+          NZD, PLN, RON, RSD, SAR, SEK, SGD, THB, TND, TRY, USD, VND, ZAR,
+        ]
       example: UAH
 
     Transaction:
