@@ -38,7 +38,10 @@ export type TransactionStatus = 'pending' | 'posted' | 'failed';
 @Check('transactions_description_length', 'length(description) <= 500')
 // Composite index for q1 (account statement, newest first) and a partial index
 // for q2 (pending queue, newest first) — both need DESC ordering that the
-// decorator can't express, so the real DDL lives in the migration by hand.
+// decorator can't express, so the real DDL lives in the migrations by hand.
+// The q1 index also carries INCLUDE (type, amount_cents, currency, fx_rate) —
+// see TransactionsAccountBookedIndexCovering — which @Index has no syntax for
+// either.
 @Index('transactions_account_booked_idx', { synchronize: false })
 @Index('transactions_pending_booked_idx', { synchronize: false })
 export class Transaction {
