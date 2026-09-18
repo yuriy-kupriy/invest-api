@@ -1,78 +1,97 @@
 import { Injectable } from '@nestjs/common';
-import { Account } from '@/domain/account';
+import { InjectRepository } from '@nestjs/typeorm';
+import { EntityManager, In, Repository } from 'typeorm';
+import { Account as AccountEntity } from '@/entities/account.entity';
+import { Account, AccountType } from '@/domain/account';
 import { Currency } from '@/domain/currency';
+import { CursorPayload } from '@/shared/pagination';
 
-export abstract class AccountsRepository {
-  abstract findById(id: string): Account | undefined;
-  abstract findAll(): Account[];
-  abstract save(account: Account): Account;
-  abstract updateBalance(id: string, delta: number): void;
-  abstract has(id: string): boolean;
+/**
+ * Accounts created through this API attach to a fixed system user: the HW #9
+ * domain type has no concept of "who owns this account" (it predates the HW
+ * #12 schema's `users` table), while `accounts.user_id` is NOT NULL. The seed
+ * script (src/seed.ts) creates this exact user, so it must have run first.
+ */
+const SEED_OWNER_USER_ID = '00000001-0000-4000-8000-000000000001';
+
+function toDomain(entity: AccountEntity): Account {
+  return {
+    id: entity.id,
+    name: entity.name,
+    type: entity.type,
+    currency: entity.currency as Currency,
+    balance_cents: entity.balanceCents,
+    created_at: entity.createdAt.toISOString(),
+  };
 }
 
 @Injectable()
-export class InMemoryAccountsRepository extends AccountsRepository {
-  private readonly accounts = new Map<string, Account>();
+export class AccountsRepository {
+  constructor(@InjectRepository(AccountEntity) private readonly repo: Repository<AccountEntity>) {}
 
-  constructor() {
-    super();
-    this.seed();
+  /**
+   * Every method takes an optional EntityManager so a caller that opened a
+   * transaction (TransactionsService.create) can run inside it instead of on a
+   * separate autocommitted connection.
+   */
+  private repoFor(manager?: EntityManager): Repository<AccountEntity> {
+    return manager ? manager.getRepository(AccountEntity) : this.repo;
   }
 
-  findById(id: string): Account | undefined {
-    return this.accounts.get(id);
+  async findById(id: string, manager?: EntityManager): Promise<Account | undefined> {
+    const entity = await this.repoFor(manager).findOne({ where: { id } });
+    return entity ? toDomain(entity) : undefined;
   }
 
-  findAll(): Account[] {
-    return [...this.accounts.values()];
+  /**
+   * Batched form of `findById`: a create-transactions batch of up to 100
+   * entries can repeat the same account_id, so this resolves the whole batch
+   * with one `WHERE id IN (...)` instead of one SELECT per entry.
+   */
+  async findByIds(ids: string[], manager?: EntityManager): Promise<Account[]> {
+    if (ids.length === 0) {
+      return [];
+    }
+    const entities = await this.repoFor(manager).find({ where: { id: In(ids) } });
+    return entities.map(toDomain);
   }
 
-  save(account: Account): Account {
-    this.accounts.set(account.id, account);
+  /** Keyset page ordered by (created_at DESC, id DESC) — the cursor's sort key is created_at. */
+  async findPage(limit: number, cursor?: CursorPayload): Promise<Account[]> {
+    const qb = this.repo
+      .createQueryBuilder('a')
+      .orderBy('a.createdAt', 'DESC')
+      .addOrderBy('a.id', 'DESC')
+      .take(limit);
+
+    if (cursor) {
+      qb.andWhere('(a.createdAt, a.id) < (:c, :cid)', { c: cursor.c, cid: cursor.id });
+    }
+
+    const entities = await qb.getMany();
+    return entities.map(toDomain);
+  }
+
+  async save(account: Account, manager?: EntityManager): Promise<Account> {
+    const repo = this.repoFor(manager);
+    const entity = repo.create({
+      id: account.id,
+      userId: SEED_OWNER_USER_ID,
+      currency: account.currency,
+      name: account.name,
+      type: account.type as AccountType,
+      balanceCents: account.balance_cents,
+      isArchived: false,
+    });
+    await repo.save(entity);
     return account;
   }
 
-  updateBalance(id: string, delta: number): void {
-    const account = this.accounts.get(id);
-    if (!account) {
-      return;
-    }
-    account.balance_cents += delta;
+  async updateBalance(id: string, delta: number, manager?: EntityManager): Promise<void> {
+    await this.repoFor(manager).increment({ id }, 'balanceCents', delta);
   }
 
-  has(id: string): boolean {
-    return this.accounts.has(id);
-  }
-
-  private seed(): void {
-    this.accounts.clear();
-    for (const account of [
-      {
-        id: '11111111-1111-4111-8111-111111111111',
-        name: 'Cash UAH',
-        type: 'cash' as const,
-        currency: Currency.UAH,
-        balance_cents: 350000,
-        created_at: '2026-01-10T09:00:00.000Z',
-      },
-      {
-        id: '22222222-2222-4222-8222-222222222222',
-        name: 'IBKR brokerage',
-        type: 'brokerage' as const,
-        currency: Currency.USD,
-        balance_cents: 1250000,
-        created_at: '2026-02-01T09:00:00.000Z',
-      },
-      {
-        id: '33333333-3333-4333-8333-333333333333',
-        name: 'Apartment in Pechersk',
-        type: 'property' as const,
-        currency: Currency.USD,
-        balance_cents: 9500000,
-        created_at: '2026-02-15T09:00:00.000Z',
-      },
-    ]) {
-      this.accounts.set(account.id, account);
-    }
+  async has(id: string, manager?: EntityManager): Promise<boolean> {
+    return this.repoFor(manager).exists({ where: { id } });
   }
 }

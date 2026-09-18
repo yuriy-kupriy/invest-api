@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { HttpStatus } from '@nestjs/common';
 import { Account } from '@/domain/account';
 import { Currency } from '@/domain/currency';
+import { encodeCursor } from '@/shared/pagination';
 import { ProblemException } from '@/shared/problem.exception';
 import { AccountsRepository } from './accounts.repository';
 import { AccountsService } from './accounts.service';
@@ -36,8 +37,8 @@ describe('AccountsService', () => {
           provide: AccountsRepository,
           useValue: {
             findById: jest.fn(),
-            findAll: jest.fn(),
-            save: jest.fn((account: Account) => account),
+            findPage: jest.fn(),
+            save: jest.fn((account: Account) => Promise.resolve(account)),
             updateBalance: jest.fn(),
             has: jest.fn(),
           },
@@ -54,19 +55,44 @@ describe('AccountsService', () => {
   });
 
   describe('list', () => {
-    it('returns accounts newest first and a next_cursor when the page is full', () => {
-      accountsRepo.findAll.mockReturnValue([cashAccount, brokerageAccount]);
+    // Ordering and cursor filtering now happen in SQL (AccountsRepository.findPage),
+    // so what's left to test here is the page contract: pass the limit down, and
+    // issue a cursor only when the page came back full.
+    it('issues a next_cursor when the page is full', async () => {
+      accountsRepo.findPage.mockResolvedValue([brokerageAccount]);
 
-      const page = service.list(1);
+      const page = await service.list(1);
 
+      expect(accountsRepo.findPage).toHaveBeenCalledWith(1, undefined);
       expect(page.items).toEqual([brokerageAccount]);
       expect(page.next_cursor).toEqual(expect.any(String));
+    });
+
+    it('reports no next page when fewer rows than the limit come back', async () => {
+      accountsRepo.findPage.mockResolvedValue([cashAccount, brokerageAccount]);
+
+      const page = await service.list(20);
+
+      expect(page.items).toHaveLength(2);
+      expect(page.next_cursor).toBeNull();
+    });
+
+    it('decodes the incoming cursor and hands it to the repository', async () => {
+      accountsRepo.findPage.mockResolvedValue([]);
+      const cursor = encodeCursor(cashAccount.created_at, cashAccount.id);
+
+      await service.list(20, cursor);
+
+      expect(accountsRepo.findPage).toHaveBeenCalledWith(20, {
+        c: cashAccount.created_at,
+        id: cashAccount.id,
+      });
     });
   });
 
   describe('create', () => {
-    it('saves an account with the opening balance', () => {
-      const created = service.create({
+    it('saves an account with the opening balance', async () => {
+      const created = await service.create({
         name: 'EUR cash',
         type: 'cash',
         currency: Currency.EUR,
@@ -85,17 +111,17 @@ describe('AccountsService', () => {
   });
 
   describe('getById', () => {
-    it('returns the account when it exists', () => {
-      accountsRepo.findById.mockReturnValue(cashAccount);
+    it('returns the account when it exists', async () => {
+      accountsRepo.findById.mockResolvedValue(cashAccount);
 
-      expect(service.getById(cashAccount.id)).toEqual(cashAccount);
+      expect(await service.getById(cashAccount.id)).toEqual(cashAccount);
     });
 
-    it('throws ProblemException when the account is missing', () => {
-      accountsRepo.findById.mockReturnValue(undefined);
+    it('throws ProblemException when the account is missing', async () => {
+      accountsRepo.findById.mockResolvedValue(undefined);
 
       try {
-        service.getById('00000000-0000-4000-8000-000000000000');
+        await service.getById('00000000-0000-4000-8000-000000000000');
         throw new Error('expected ProblemException');
       } catch (err) {
         expect(err).toBeInstanceOf(ProblemException);

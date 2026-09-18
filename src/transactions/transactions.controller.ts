@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Header, HttpCode, HttpStatus, Param, Post, Query } from '@nestjs/common';
 import {
   ApiBadRequestResponse,
   ApiConflictResponse,
@@ -30,12 +30,16 @@ export class TransactionsController {
   constructor(private readonly transactionsService: TransactionsService) {}
 
   @Get()
+  // A cursor page of a table that is written to constantly; without this a
+  // proxy is free to apply heuristic freshness (RFC 9111) and hand a client
+  // someone else's stale page. Unlike fx rates, there is no stable answer to cache.
+  @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: i18n('transactions.list.summary') })
   @ApiOkResponse({ type: TransactionPageDto })
   @ApiBadRequestResponse(problemResponse(i18n('transactions.list.badRequest')))
   @ApiNotFoundResponse(problemResponse(i18n('transactions.list.notFound')))
   @ApiInternalServerErrorResponse(problemResponse(i18n('errors.internal')))
-  list(@Query() query: ListTransactionsQueryDto): TransactionPage {
+  list(@Query() query: ListTransactionsQueryDto): Promise<TransactionPage> {
     return this.transactionsService.list(query.limit, query.cursor, query.account_id);
   }
 
@@ -64,7 +68,7 @@ export class TransactionsController {
   @ApiConflictResponse(problemResponse(i18n('transactions.create.conflict')))
   @ApiUnprocessableEntityResponse(problemResponse(i18n('transactions.create.unprocessable')))
   @ApiInternalServerErrorResponse(problemResponse(i18n('errors.internal')))
-  create(@Body() body: CreateTransactionsDto): TransactionBatch {
+  create(@Body() body: CreateTransactionsDto): Promise<TransactionBatch> {
     return this.transactionsService.create(body);
   }
 
@@ -75,7 +79,7 @@ export class TransactionsController {
   @ApiBadRequestResponse(problemResponse(i18n('transactions.get.badRequest')))
   @ApiNotFoundResponse(problemResponse(i18n('transactions.get.notFound')))
   @ApiInternalServerErrorResponse(problemResponse(i18n('errors.internal')))
-  get(@Param() params: TransactionIdParamDto): TransactionResponse {
+  get(@Param() params: TransactionIdParamDto): Promise<TransactionResponse> {
     return this.transactionsService.getById(params.transaction_id);
   }
 }

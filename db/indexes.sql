@@ -4,16 +4,20 @@
 --
 -- Exactly three indexes for three queries. Nothing "just in case": every extra
 -- index is disk plus a slower INSERT on a 500k-row table. There is deliberately
--- no index under fx_rate — the composite primary key (source, currency,
--- rate_date) already provides it, and it serves the one access pattern rates
--- need.
+-- no index under fx_rate — the composite primary key (currency, rate_date,
+-- source) already serves both ways rates are read.
 
 -- q1 — an account statement for a date range, with keyset pagination.
 -- Column order mirrors the query: equality on account_id, then a range and sort
 -- on booked_at, id. DESC in the definition lets the planner read the index
 -- forward instead of doing a Backward Index Scan, and makes ORDER BY free.
+-- INCLUDE carries the rest of q1's SELECT list (type, amount_cents, currency,
+-- fx_rate) as non-key payload: every column the query asks for is now in the
+-- index tuple, so the plan turns into an Index Only Scan and the ~50 heap
+-- visits (one per returned row) disappear along with their buffers.
 CREATE INDEX transactions_account_booked_idx
-  ON transactions (account_id, booked_at DESC, id DESC);
+  ON transactions (account_id, booked_at DESC, id DESC)
+  INCLUDE (type, amount_cents, currency, fx_rate);
 
 -- q2 — the queue of unfinished operations. PARTIAL: 'pending' is 2.2% of the
 -- table, so indexing the other 97.8% makes no sense — those rows can never

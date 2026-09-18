@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { HttpStatus } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { getDataSourceToken } from '@nestjs/typeorm';
 import { AccountsRepository } from '@/accounts/accounts.repository';
 import { Account } from '@/domain/account';
 import { Currency } from '@/domain/currency';
@@ -44,19 +45,27 @@ describe('TransactionsService', () => {
           provide: TransactionsRepository,
           useValue: {
             findById: jest.fn(),
-            findAll: jest.fn(),
-            save: jest.fn((tx: Transaction) => tx),
+            findPage: jest.fn(),
+            saveMany: jest.fn((batch: Transaction[]) => Promise.resolve(batch)),
           },
         },
         {
           provide: AccountsRepository,
           useValue: {
-            findById: jest.fn(),
-            findAll: jest.fn(),
+            findByIds: jest.fn(),
+            findPage: jest.fn(),
             save: jest.fn(),
             updateBalance: jest.fn(),
             has: jest.fn(),
           },
+        },
+        {
+          // create() runs the whole batch inside dataSource.transaction(); the
+          // stub just invokes the callback with a dummy manager, so the unit
+          // tests still exercise the ordering of reads, saves and balance
+          // updates. Real rollback behaviour is covered by the e2e suite.
+          provide: getDataSourceToken(),
+          useValue: { transaction: jest.fn((cb: (m: unknown) => unknown) => cb({})) },
         },
         {
           // The service only asks the config for DRIFT; snake_case wire format
@@ -77,29 +86,42 @@ describe('TransactionsService', () => {
   });
 
   describe('list', () => {
-    it('throws when account_id filter points to a missing account', () => {
-      accountsRepo.has.mockReturnValue(false);
+    it('throws when account_id filter points to a missing account', async () => {
+      accountsRepo.has.mockResolvedValue(false);
 
-      expect(() => service.list(20, undefined, cashAccount.id)).toThrow(ProblemException);
+      await expect(service.list(20, undefined, cashAccount.id)).rejects.toThrow(ProblemException);
     });
 
-    it('filters by account_id when the account exists', () => {
-      accountsRepo.has.mockReturnValue(true);
-      transactionsRepo.findAll.mockReturnValue([expense]);
+    // The account_id filter, the ordering and the cursor are now part of the
+    // SQL query (TransactionsRepository.findPage); the service's remaining job
+    // is to pass them down and to decide whether a next_cursor is due.
+    it('pushes the account_id filter down to the repository', async () => {
+      accountsRepo.has.mockResolvedValue(true);
+      transactionsRepo.findPage.mockResolvedValue([expense]);
 
-      const page = service.list(20, undefined, cashAccount.id);
+      const page = await service.list(20, undefined, cashAccount.id);
 
+      expect(transactionsRepo.findPage).toHaveBeenCalledWith(20, undefined, cashAccount.id);
       expect(page.items).toHaveLength(1);
       expect(page.items[0].id).toBe(expense.id);
       expect(page.next_cursor).toBeNull();
     });
+
+    it('issues a next_cursor when the page comes back full', async () => {
+      accountsRepo.has.mockResolvedValue(true);
+      transactionsRepo.findPage.mockResolvedValue([expense]);
+
+      const page = await service.list(1);
+
+      expect(page.next_cursor).toEqual(expect.any(String));
+    });
   });
 
   describe('create', () => {
-    it('saves the batch and decrements balance for expense', () => {
-      accountsRepo.findById.mockReturnValue(cashAccount);
+    it('saves the batch and decrements balance for expense', async () => {
+      accountsRepo.findByIds.mockResolvedValue([cashAccount]);
 
-      const result = service.create({
+      const result = await service.create({
         entries: [
           {
             account_id: cashAccount.id,
@@ -118,14 +140,18 @@ describe('TransactionsService', () => {
         amount_cents: 1250,
         currency: Currency.UAH,
       });
-      expect(transactionsRepo.save).toHaveBeenCalledTimes(1);
-      expect(accountsRepo.updateBalance).toHaveBeenCalledWith(cashAccount.id, -1250);
+      expect(transactionsRepo.saveMany).toHaveBeenCalledTimes(1);
+      // Third argument is the EntityManager of the surrounding DB transaction —
+      // its presence is the point: the balance update shares the batch's rollback.
+      expect(accountsRepo.updateBalance).toHaveBeenCalledWith(cashAccount.id, -1250, {});
     });
 
-    it('does not save anything when a later entry is invalid', () => {
-      accountsRepo.findById.mockReturnValueOnce(cashAccount).mockReturnValueOnce(undefined);
+    it('does not save anything when a later entry is invalid', async () => {
+      // findByIds resolves the whole batch's unique account_ids in one call —
+      // the missing account simply isn't in the returned array.
+      accountsRepo.findByIds.mockResolvedValue([cashAccount]);
 
-      expect(() =>
+      await expect(
         service.create({
           entries: [
             {
@@ -144,17 +170,17 @@ describe('TransactionsService', () => {
             },
           ],
         }),
-      ).toThrow(ProblemException);
+      ).rejects.toThrow(ProblemException);
 
-      expect(transactionsRepo.save).not.toHaveBeenCalled();
+      expect(transactionsRepo.saveMany).not.toHaveBeenCalled();
       expect(accountsRepo.updateBalance).not.toHaveBeenCalled();
     });
 
-    it('throws currency-mismatch when entry currency differs from the account', () => {
-      accountsRepo.findById.mockReturnValue(cashAccount);
+    it('throws currency-mismatch when entry currency differs from the account', async () => {
+      accountsRepo.findByIds.mockResolvedValue([cashAccount]);
 
       try {
-        service.create({
+        await service.create({
           entries: [
             {
               account_id: cashAccount.id,
@@ -175,20 +201,20 @@ describe('TransactionsService', () => {
   });
 
   describe('getById', () => {
-    it('returns the transaction when it exists', () => {
-      transactionsRepo.findById.mockReturnValue(expense);
+    it('returns the transaction when it exists', async () => {
+      transactionsRepo.findById.mockResolvedValue(expense);
 
-      expect(service.getById(expense.id)).toMatchObject({
+      expect(await service.getById(expense.id)).toMatchObject({
         id: expense.id,
         amount_cents: expense.amount_cents,
       });
     });
 
-    it('throws when the transaction is missing', () => {
-      transactionsRepo.findById.mockReturnValue(undefined);
+    it('throws when the transaction is missing', async () => {
+      transactionsRepo.findById.mockResolvedValue(undefined);
 
       try {
-        service.getById('aaaaaaaa-0000-4000-8000-000000000099');
+        await service.getById('aaaaaaaa-0000-4000-8000-000000000099');
         throw new Error('expected ProblemException');
       } catch (err) {
         expect(err).toBeInstanceOf(ProblemException);

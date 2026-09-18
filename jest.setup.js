@@ -9,3 +9,5 @@ process.env.DB_URL = process.env.DB_URL || 'postgres://invest_app@localhost:5432
 // during a test run, and a local DRIFT=1 would otherwise flip the wire format
 // under the e2e suite and fail transaction tests that have nothing to do with it.
 process.env.DRIFT = '0';
+// Same reasoning: a test run must never reach out to bank.gov.ua on boot.
+process.env.FX_SYNC_ON_START = '0';

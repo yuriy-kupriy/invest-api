@@ -20,5 +20,38 @@ services:
       timeout: 3s
       retries: 10
 
+  # Dev-only DB browser — not part of `docker compose up -d --wait` (grading
+  # has no business getting an extra container), opt in with:
+  #   docker compose --profile tools up -d pgadmin
+  # Then http://localhost:5050 — desktop mode (SERVER_MODE False), so no
+  # pgAdmin login; the image still requires the two PGADMIN_DEFAULT_* vars to
+  # start. The "invest (docker)" server is pre-registered
+  # (pgadmin/servers.json) and pre-authenticated (pgadmin/pgpass — the same
+  # non-secret `postgres`/`postgres` dev superuser as above), so it connects
+  # with no prompts at all. The pgpass goes through PGPASS_FILE rather than
+  # being mounted where libpq reads it: git stores the file as 0644 and libpq
+  # ignores a password file with group/world access, so a fresh clone would
+  # prompt. The entrypoint copies it into /var/lib/pgadmin/.pgpass with 0600.
+  # That copy happens only on first init — after editing pgpass, recreate the
+  # pgadmin_data volume.
+  pgadmin:
+    image: dpage/pgadmin4:9
+    profiles: [tools]
+    environment:
+      PGADMIN_DEFAULT_EMAIL: pgadmin@local.dev
+      PGADMIN_DEFAULT_PASSWORD: pgadmin
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+      PGPASS_FILE: /pgpass
+    ports:
+      - '${PGADMIN_HOST_PORT:-5050}:80'
+    volumes:
+      - ./pgadmin/servers.json:/pgadmin4/servers.json:ro
+      - ./pgadmin/pgpass:/pgpass:ro
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   pgdata:
+  pgadmin_data:

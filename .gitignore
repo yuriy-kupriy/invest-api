@@ -10,6 +10,10 @@ spec.json
 # db_password.example — негативний патерн усередині ігнорованої теки не працює.
 secrets/*
 !secrets/db_password.example
+
+# HW #11 vault wrapper credentials: real Infisical login lives outside git.
+.secrets/*
+!.secrets/infisical.env.example
 .idea/
 .DS_Store
 *.log

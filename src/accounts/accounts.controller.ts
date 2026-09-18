@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query, Res } from '@nestjs/common';
+import { Body, Controller, Get, Header, HttpCode, HttpStatus, Param, Post, Query, Res } from '@nestjs/common';
 import {
   ApiBadRequestResponse,
   ApiCreatedResponse,
@@ -28,11 +28,14 @@ export class AccountsController {
   constructor(private readonly accountsService: AccountsService) {}
 
   @Get()
+  // Balances change on every posted transaction — nothing here is worth a
+  // cache, and an unlabelled response invites heuristic freshness in proxies.
+  @Header('Cache-Control', 'no-store')
   @ApiOperation({ summary: i18n('accounts.list.summary') })
   @ApiOkResponse({ type: AccountPageDto })
   @ApiBadRequestResponse(problemResponse(i18n('accounts.list.badRequest')))
   @ApiInternalServerErrorResponse(problemResponse(i18n('errors.internal')))
-  list(@Query() query: PageQueryDto): AccountPage {
+  list(@Query() query: PageQueryDto): Promise<AccountPage> {
     return this.accountsService.list(query.limit, query.cursor);
   }
 
@@ -50,11 +53,11 @@ export class AccountsController {
   })
   @ApiBadRequestResponse(problemResponse(i18n('accounts.create.badRequest')))
   @ApiInternalServerErrorResponse(problemResponse(i18n('errors.internal')))
-  create(
+  async create(
     @Body() body: CreateAccountDto,
     @Res({ passthrough: true }) res: Response,
-  ): Account {
-    const account = this.accountsService.create(body);
+  ): Promise<Account> {
+    const account = await this.accountsService.create(body);
     res.location(`/accounts/${account.id}`);
     return account;
   }
@@ -66,7 +69,7 @@ export class AccountsController {
   @ApiBadRequestResponse(problemResponse(i18n('accounts.get.badRequest')))
   @ApiNotFoundResponse(problemResponse(i18n('accounts.get.notFound')))
   @ApiInternalServerErrorResponse(problemResponse(i18n('errors.internal')))
-  get(@Param() params: AccountIdParamDto): Account {
+  get(@Param() params: AccountIdParamDto): Promise<Account> {
     return this.accountsService.getById(params.account_id);
   }
 }

@@ -45,12 +45,12 @@ describe('TransactionsController', () => {
     jest.clearAllMocks();
   });
 
-  it('list forwards query fields to the service', () => {
+  it('list forwards query fields to the service', async () => {
     const page = { items: [expense], next_cursor: null };
-    transactionsService.list.mockReturnValue(page);
+    transactionsService.list.mockResolvedValue(page);
 
     expect(
-      controller.list({
+      await controller.list({
         limit: 10,
         cursor: 'tok',
         account_id: expense.account_id,
@@ -59,9 +59,9 @@ describe('TransactionsController', () => {
     expect(transactionsService.list).toHaveBeenCalledWith(10, 'tok', expense.account_id);
   });
 
-  it('create returns the batch from the service', () => {
+  it('create returns the batch from the service', async () => {
     const batch = { transactions: [expense] };
-    transactionsService.create.mockReturnValue(batch);
+    transactionsService.create.mockResolvedValue(batch);
     const dto: CreateTransactionsDto = {
       entries: [
         {
@@ -74,14 +74,14 @@ describe('TransactionsController', () => {
       ],
     };
 
-    expect(controller.create(dto)).toBe(batch);
+    expect(await controller.create(dto)).toBe(batch);
     expect(transactionsService.create).toHaveBeenCalledWith(dto);
   });
 
-  it('get passes transaction_id to the service', () => {
-    transactionsService.getById.mockReturnValue(expense);
+  it('get passes transaction_id to the service', async () => {
+    transactionsService.getById.mockResolvedValue(expense);
 
-    expect(controller.get({ transaction_id: expense.id })).toBe(expense);
+    expect(await controller.get({ transaction_id: expense.id })).toBe(expense);
     expect(transactionsService.getById).toHaveBeenCalledWith(expense.id);
   });
 });

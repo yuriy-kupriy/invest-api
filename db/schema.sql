@@ -37,7 +37,7 @@ CREATE TABLE users (
   id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
   email        text        NOT NULL UNIQUE CHECK (length(email) BETWEEN 3 AND 254),
   display_name text        NOT NULL CHECK (length(display_name) BETWEEN 1 AND 120),
-  created_at   timestamptz NOT NULL DEFAULT now()
+  created_at   timestamptz(3) NOT NULL DEFAULT now()
 );
 
 CREATE TABLE accounts (
@@ -48,7 +48,12 @@ CREATE TABLE accounts (
   type          text        NOT NULL CHECK (type IN ('cash', 'bank', 'brokerage', 'property')),
   balance_cents bigint      NOT NULL DEFAULT 0,
   is_archived   boolean     NOT NULL DEFAULT false,
-  created_at    timestamptz NOT NULL DEFAULT now()
+  created_at    timestamptz(3) NOT NULL DEFAULT now(),
+
+  -- Redundant on top of the PK alone — it exists so transactions can carry a
+  -- composite FK (account_id, currency) and have the database itself, not just
+  -- application code, reject a transaction whose currency isn't the account's.
+  UNIQUE (id, currency)
 );
 
 CREATE TABLE instruments (
@@ -57,7 +62,7 @@ CREATE TABLE instruments (
   name        text        NOT NULL CHECK (length(name) BETWEEN 1 AND 120),
   asset_class text        NOT NULL CHECK (asset_class IN ('equity', 'etf', 'bond', 'crypto')),
   currency    text        NOT NULL REFERENCES currency(code),
-  created_at  timestamptz NOT NULL DEFAULT now()
+  created_at  timestamptz(3) NOT NULL DEFAULT now()
 );
 
 CREATE TABLE categories (
@@ -84,10 +89,12 @@ CREATE TABLE categories (
 -- alternative is either thousands of rows holding the value "one", or a
 -- constraint that promises a UAH row that doesn't actually exist.
 --
--- PK (source, currency, rate_date) is already the index the one access pattern
--- needs: WHERE source=? AND currency=? AND rate_date <= ? ORDER BY rate_date DESC
--- LIMIT 1 — equality on the first two columns, a range on the third, backward
--- index scan.
+-- PK (currency, rate_date, source) is the only index the table needs, and its
+-- column order follows how rates are actually read: the latest rate is
+-- WHERE currency=? AND rate_date <= ? ORDER BY rate_date DESC, source (equality,
+-- then a backward range scan), and the startup cache load reads everything in
+-- currency, rate_date, source order (a plain index scan, no sort). The order
+-- was source-first until the FxRatePrimaryKeyCurrencyFirst migration.
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE TABLE fx_rate (
   source     text           NOT NULL CHECK (length(source) BETWEEN 1 AND 40),
@@ -96,8 +103,8 @@ CREATE TABLE fx_rate (
   raw_rate   numeric(20,10) NOT NULL CHECK (raw_rate > 0),
   raw_units  integer        NOT NULL DEFAULT 1 CHECK (raw_units > 0),
   rate       numeric(20,10) GENERATED ALWAYS AS ((raw_rate / raw_units)::numeric(20,10)) STORED,
-  fetched_at timestamptz    NOT NULL DEFAULT now(),
-  PRIMARY KEY (source, currency, rate_date),
+  fetched_at timestamptz(3) NOT NULL DEFAULT now(),
+  PRIMARY KEY (currency, rate_date, source),
   CONSTRAINT fx_rate_base_is_not_quoted CHECK (currency <> 'UAH')
 );
 
@@ -125,9 +132,9 @@ CREATE TABLE transactions (
   fx_rate        numeric(20,10) NOT NULL DEFAULT 1 CHECK (fx_rate > 0),
   quantity_micro bigint         CHECK (quantity_micro > 0),
   unit_price     numeric(20,10) CHECK (unit_price > 0),
-  booked_at      timestamptz    NOT NULL,
+  booked_at      timestamptz(3) NOT NULL,
   description    text           CHECK (length(description) <= 500),
-  created_at     timestamptz    NOT NULL DEFAULT now(),
+  created_at     timestamptz(3) NOT NULL DEFAULT now(),
 
   -- An investment operation without an instrument — or vice versa — is a lie in the data.
   CONSTRAINT transactions_instrument_matches_type
@@ -135,7 +142,16 @@ CREATE TABLE transactions (
 
   -- A hryvnia operation with a rate other than 1 would mean the snapshot was taken from the wrong currency.
   CONSTRAINT transactions_base_currency_rate_is_one
-    CHECK ((currency = 'UAH') = (fx_rate = 1))
+    CHECK ((currency = 'UAH') = (fx_rate = 1)),
+
+  -- A transaction's currency must be its account's currency. Without this, the
+  -- lone `currency REFERENCES currency(code)` above only checks that the code
+  -- is a real currency, not that it's the right one for this account — a EUR
+  -- operation on a UAH account would pass. ON UPDATE RESTRICT states the other
+  -- half: an account's currency is immutable once it has transactions.
+  CONSTRAINT transactions_currency_matches_account
+    FOREIGN KEY (account_id, currency) REFERENCES accounts (id, currency)
+    ON DELETE CASCADE ON UPDATE RESTRICT
 );
 
 -- The app role is created by db/init.sql the first time the volume comes up.

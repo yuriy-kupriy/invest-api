@@ -1,0 +1,14 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "invest (docker)",
+      "Group": "Servers",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "invest",
+      "Username": "postgres",
+      "SSLMode": "prefer",
+      "PassFile": "/var/lib/pgadmin/.pgpass"
+    }
+  }
+}

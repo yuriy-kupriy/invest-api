@@ -87,6 +87,42 @@ heapsort` більше не потрібен, а разом із сортува�
 читання всіх 9 084 сторінок таблиці з відкиданням 166 554 рядків на воркера (`Rows Removed by
 Filter`) запит спускається по дереву індексу й піднімає рівно ті 50 рядків, які просить `LIMIT`.
 
+### Ще далі — INCLUDE замість Index Scan
+
+53 buffers — це вже не Seq Scan, але й не безкоштовно: 50 рядків, 50 heap-візитів. `q1.sql` бере
+`type, amount_cents, currency, fx_rate` — жодної з цих чотирьох колонок в означенні індексу немає,
+тож кожен рядок, знайдений в індексі, планер все одно йде піднімати з таблиці.
+
+```sql
+CREATE INDEX transactions_account_booked_idx
+  ON transactions (account_id, booked_at DESC, id DESC)
+  INCLUDE (type, amount_cents, currency, fx_rate);
+```
+
+```
+ Limit  (cost=0.42..3.66 rows=50 width=65) (actual time=0.111..0.129 rows=50 loops=1)
+   Buffers: shared hit=1 read=4
+   ->  Index Only Scan using transactions_account_booked_idx on transactions  (cost=0.42..860.88 rows=13283 width=65) (actual time=0.110..0.125 rows=50 loops=1)
+         Index Cond: (account_id = '473ecd9f-e45b-282b-857c-5bf70105af38'::uuid)
+         Heap Fetches: 0
+         Buffers: shared hit=1 read=4
+ Planning:
+   Buffers: shared hit=177
+ Planning Time: 1.753 ms
+ Execution Time: 0.217 ms
+```
+
+`Index Only Scan` + `Heap Fetches: 0`: усі сім колонок, які просить `q1.sql`, тепер лежать прямо в
+листках індексу (три — як ключ, чотири — як `INCLUDE`-payload), тож таблицю запит не відкриває
+взагалі. Buffers впали з 53 до 5 (ще ×10.6 понад щойно показане ×173, разом ×1835 відносно Seq Scan),
+`Execution Time` — з 1.293 мс до 0.217 мс. Ціна: індекс важчає з 28 MB до **46 MB**, бо payload
+чотирьох колонок дублюється в кожному листковому записі — вибрано свідомо, `q1` найгарячіший з
+трьох запитів (GET-по-рахунку виконується на кожному відкритті виписки).
+
+`down()` в [`TransactionsAccountBookedIndexCovering`](../src/migrations/1789240000000-TransactionsAccountBookedIndexCovering.ts)
+дропає й перестворює індекс без `INCLUDE` — Postgres не має `ALTER INDEX ... ADD INCLUDE`, тому і
+`up()`, і `down()` це `DROP INDEX` + `CREATE INDEX`.
+
 ---
 
 ## q2 — черга незавершених операцій
@@ -255,5 +291,7 @@ docker compose exec -T postgres psql -U postgres -d invest \
 (`idx_scan = 2` — це рівно два теплі прогони EXPLAIN на індекс із замірів вище.)
 
 Під `fx_rate` окремого індексу немає навмисно: складений первинний ключ
-`(source, currency, rate_date)` уже обслуговує єдиний патерн доступу до курсів —
-`WHERE source = ? AND currency = ? AND rate_date <= ? ORDER BY rate_date DESC LIMIT 1`.
+`(currency, rate_date, source)` уже обслуговує обидва патерни доступу до курсів —
+`WHERE currency = ? AND rate_date <= ? ORDER BY rate_date DESC, source LIMIT 1` і повне читання
+в порядку `currency, rate_date, source` для кешу на старті (порядок колонок змінено міграцією
+`FxRatePrimaryKeyCurrencyFirst`, заміри — у ній).

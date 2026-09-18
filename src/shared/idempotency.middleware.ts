@@ -80,6 +80,21 @@ export class IdempotencyMiddleware implements NestMiddleware {
     }) as Response['json'];
 
     res.on('finish', () => {
+      // Only a successful response is worth replaying. Any error — 4xx or 5xx —
+      // releases the key so the client can retry, which is the entire purpose
+      // of handing out an idempotency key in the first place.
+      //
+      // An earlier revision also cached 5xx, reasoning that a write might have
+      // committed before the failure. That traded a rare double-write for a
+      // guaranteed one: a transient 500 (rolled back, nothing written) left the
+      // key unusable for the full 24h TTL, so the operation could never be
+      // completed — and the replay carried an empty body, because error
+      // responses go out through `sendProblem()`/`res.send()` and never pass
+      // through the `res.json` patch below that captures bodies.
+      //
+      // The window that argument worried about is now vanishingly small: the
+      // handler's work is one DB transaction, and the only step left after
+      // COMMIT is serialising the response.
       if (res.statusCode === HttpStatus.CREATED) {
         store.set(key, {
           state: 'done',
