@@ -21,6 +21,17 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * `DROP CONSTRAINT "transactions_currency_matches_account"`. Delete that line
  * from the generated file. The UNIQUE is safe: it is declared on the entity via
  * @Unique('accounts_id_currency_uk', ['id', 'currency']).
+ *
+ * Tried instead of accepting this: giving `Transaction.account`'s `@JoinColumn`
+ * a composite array (`[{account_id→id}, {currency→currency}]`) so TypeORM
+ * would know about the FK. Measured with `typeorm schema:log`: it made drift
+ * worse, not better — 3 statements instead of 1. TypeORM drops the original
+ * single-column `account_id` FK, still doesn't recognize this hand-named
+ * constraint (it generates its own `FK_...` name), and rebuilds the composite
+ * FK with `ON UPDATE NO ACTION` — silently losing the `ON UPDATE RESTRICT`
+ * that is the actual point of this migration (an account's currency becomes
+ * immutable once it has transactions). Reverted; the one-line manual step
+ * above stays the answer.
  */
 export class AccountCurrencyGuard1789230000000 implements MigrationInterface {
   name = 'AccountCurrencyGuard1789230000000';
