@@ -953,7 +953,7 @@ CREATE INDEX accounts_lower_name_idx ON accounts (lower(name));
 
 ## Seed — детермінований і ідемпотентний
 
-[`src/seed.ts`](src/seed.ts): 6 валют, 8 users, 10 instruments, 8 categories, 12 accounts,
+[`src/seed.ts`](src/seed.ts): 41 валюта, 8 users, 10 instruments, 8 categories, 12 accounts,
 12 fx_rate, 40 transactions. Жодного `Math.random()`/`Date.now()` — id зібрані з фіксованих
 префіксів (`00000001-0000-4000-8000-…`), дати — з фіксованого зсуву від `2026-01-01`.
 Ідемпотентність — через `repository.upsert(rows, { conflictPaths: [...] })` по PK/природному
@@ -968,7 +968,7 @@ SELECT (SELECT count(*) FROM currency) || ',' || (SELECT count(*) FROM users) ||
     || (SELECT count(*) FROM transactions);
 ```
 
-До і після другого `npm run seed`: `6,8,10,8,12,12,40` — без змін.
+До і після другого `npm run seed`: `41,8,10,8,12,12,40` — без змін.
 
 ## N+1: доведено і вилікувано
 
