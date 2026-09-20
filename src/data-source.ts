@@ -5,6 +5,7 @@ import { Category } from './entities/category.entity';
 import { Currency } from './entities/currency.entity';
 import { FxRate } from './entities/fx-rate.entity';
 import { Instrument } from './entities/instrument.entity';
+import { Job } from './entities/job.entity';
 import { Transaction } from './entities/transaction.entity';
 import { User } from './entities/user.entity';
 
@@ -64,7 +65,7 @@ export const dataSourceOptions: DataSourceOptions = {
   synchronize: false,
   migrationsRun: false,
   logging: process.env.DB_LOG === '1' ? ['query', 'error'] : ['error'],
-  entities: [User, Account, Currency, Instrument, Category, FxRate, Transaction],
+  entities: [User, Account, Currency, Instrument, Category, FxRate, Transaction, Job],
   migrations: [__dirname + '/migrations/*.js'],
 };
 
