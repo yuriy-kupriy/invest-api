@@ -1,0 +1,96 @@
+name: ci
+
+on:
+  push:
+    branches: [main, 'hw-*']
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Not DEBUG=testcontainers*: the library keeps logging after the tests finish,
+  # jest turns that into "Cannot log after tests are done" and exits 1 with
+  # every test green.
+  NODE_ENV: test
+
+jobs:
+  test:
+    name: compile + integration + e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --noEmit
+      # Both suites bring their own postgres:16-alpine up from the test code
+      # (testcontainers), so no service container is declared here.
+      - run: npm run test:integration
+      - run: npm run test:e2e
+
+  contract:
+    name: contract + broker gate
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      # Secrets, never constants. The fallback is the address of the broker this
+      # job starts from the project's own compose file — an address, not a
+      # credential. PACT_BROKER_TOKEN stays empty for that local broker.
+      PACT_BROKER_URL: ${{ secrets.PACT_BROKER_URL || 'http://127.0.0.1:9292' }}
+      PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
+      CONSUMER: invest-web
+      PROVIDER: invest-api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+
+      # Only when no hosted broker was configured: PACT_BROKER_URL then still
+      # holds the fallback address of this repo's own compose service.
+      - name: Start the pact broker
+        if: ${{ contains(env.PACT_BROKER_URL, '127.0.0.1') }}
+        run: docker compose up -d --wait pact-broker
+
+      - name: Record the version under test
+        run: echo "PACT_VERSION=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+
+      - name: Generate the contract (consumer)
+        run: npm run test:contract
+
+      - name: Check every interaction path exists in the OpenAPI spec
+        run: |
+          node -e 'const p=require("./pacts/invest-web-invest-api.json");const spec=require("fs").readFileSync("openapi/openapi.yaml","utf8");const sp=[...spec.matchAll(/^\s+(\/\S*):\s*$/gm)].map(m=>m[1]);const seg=s=>s.split("?")[0].replace(/\/+$/,"").split("/");const fit=(a,b)=>{a=seg(a);b=seg(b);return a.length===b.length&&a.every((x,i)=>/^\{[^}]+\}$/.test(x)?b[i]!=="":x===b[i])};const bad=p.interactions.filter(i=>!sp.some(x=>fit(x,i.request.path)));console.log(bad.length?"NOT IN SPEC: "+bad.map(i=>i.request.path).join(", "):"OK");process.exit(bad.length?1:0)'
+
+      - name: Publish the contract to the broker
+        run: |
+          AUTH=()
+          [ -n "$PACT_BROKER_TOKEN" ] && AUTH=(-H "Authorization: Bearer $PACT_BROKER_TOKEN")
+          code=$(curl -sS -o /dev/stderr -w '%{http_code}' -X PUT \
+            "$PACT_BROKER_URL/pacts/provider/$PROVIDER/consumer/$CONSUMER/version/$PACT_VERSION" \
+            "${AUTH[@]}" -H 'Content-Type: application/json' \
+            -d @pacts/invest-web-invest-api.json)
+          echo "publish -> $code"
+          [ "$code" = "200" ] || [ "$code" = "201" ]
+
+      - name: Verify the provider and publish the result
+        run: npm run verify:provider
+
+      - name: Tag the verified provider version as prod
+        run: |
+          AUTH=()
+          [ -n "$PACT_BROKER_TOKEN" ] && AUTH=(-H "Authorization: Bearer $PACT_BROKER_TOKEN")
+          curl -sS -f -X PUT \
+            "$PACT_BROKER_URL/pacticipants/$PROVIDER/versions/$PACT_VERSION/tags/prod" \
+            "${AUTH[@]}" -H 'Content-Type: application/json'
+
+      # The release gate. Fails the job unless the broker answers
+      # "deployable": true — "unknown" is not a yes.
+      - name: can-i-deploy
+        run: bash scripts/can-i-deploy.sh "$CONSUMER" "$PACT_VERSION" prod

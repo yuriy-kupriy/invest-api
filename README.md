@@ -54,7 +54,7 @@ npm start          # http://localhost:3000 · Swagger UI: /docs · UK: /docs/uk
 | `src/shared/` | пагінація, мапери (`DRIFT`), idempotency, problem+json |
 | `src/domain/` | типи `Account` / `Transaction` |
 | `src/create-app.ts` | збірка Nest-застосунку (валідатор, pipes, error-handler) — спільна для `main.ts` і e2e-тестів |
-| `test/app.e2e-spec.ts` | e2e: той самий пайплайн, що й `npm start`, без реального `listen()` |
+| `test/e2e/app.e2e-spec.ts` | e2e: той самий пайплайн, що й `npm start`, без реального `listen()` |
 | `scripts/check-spec.js` | перевірка обсягу спеки — той самий скрипт, що в acceptance criteria |
 
 ---
@@ -62,15 +62,18 @@ npm start          # http://localhost:3000 · Swagger UI: /docs · UK: /docs/uk
 ## Тести
 
 ```bash
-npm test          # юніт: контролери/сервіси з мокнутим репозиторієм — 17 тестів
+npm test          # юніт: контролери/сервіси з мокнутим репозиторієм — 46 тестів
 npm run test:e2e  # e2e: реальний пайплайн (validateRequests/Responses, Idempotency-Key,
-                   # problem+json) через supertest, без мережевого порту — 7 тестів
+                   # problem+json) через supertest, без мережевого порту — 11 тестів
 ```
 
 Юніт-специ лежать поруч із кодом (`src/**/*.spec.ts`) — стандартна Nest CLI-конвенція.
-E2e — окремо в `test/`, зі своїм `test/jest-e2e.json`, теж за замовчуванням Nest CLI: e2e
-піднімає ціле дерево модулів разом із raw-Express шаром (`OpenApiValidator`, error-handler),
-який юніт-тести контролерів навмисно обходять моком сервісу.
+E2e — окремо в `test/e2e/`, зі своїм `test/e2e/jest-e2e.json`, теж за замовчуванням Nest CLI:
+e2e піднімає ціле дерево модулів разом із raw-Express шаром (`OpenApiValidator`,
+error-handler), який юніт-тести контролерів навмисно обходять моком сервісу.
+
+Повна картина шарів — integration на testcontainers, E2E і контракт — у розділі
+[ДЗ #16](#домашнє-завдання-16--драбинка-довіри-testcontainers-e2e-pact).
 
 ---
 
@@ -1621,3 +1624,203 @@ npm run demo:workers
 | [`backup.cron`](backup.cron) | нічний розклад — джерело RPO ≤ 24 год |
 | [`RESTORE-DRILL.md`](RESTORE-DRILL.md) | протокол прогону: дата, розмір, час, RTO і RPO числами |
 | [`rotate.sh`](rotate.sh) | + крок 4/4: userlist пулера і SIGHUP, щоб ротація лишалась безрестартною |
+
+---
+
+# Домашнє завдання #16 — драбинка довіри: testcontainers, E2E, Pact
+
+Моки більше не єдине джерело впевненості. Чотири шари, кожен зі своєю командою, кожен
+проти справжнього Postgres, піднятого з коду тесту.
+
+## Команди
+
+| Команда | Що робить | Що піднімає |
+|---|---|---|
+| `npm test` | юніт: контролери/сервіси з мокнутими залежностями — 46 тестів | нічого |
+| `npm run test:integration` | три репозиторії проти `postgres:16-alpine` — 14 тестів | testcontainer |
+| `npm run test:e2e` | наскрізний HTTP через supertest — 11 тестів | testcontainer |
+| `npm run test:contract` | consumer-тест → `pacts/invest-web-invest-api.json` | pact mock server |
+| `npm run verify:provider` | справжній застосунок проти контракту | testcontainer + `app.listen(0)` |
+
+Єдина зовнішня залежність усіх чотирьох — запущений Docker. `DATABASE_URL` у тестах
+свідомо **не** береться зі сховища: його видає контейнер у рантаймі
+(`container.getConnectionUri()`), і саме в цьому сенс шару. Сховище лишається джерелом
+для звичайного запуску застосунку (`npm start`, `npm run migrate`, `npm run seed`).
+
+```
+test/
+├── testkit/     контейнер, міграції, фікстури, test data builders
+├── integration/ accounts / fx-rate / transactions repository
+├── e2e/         supertest проти повного AppModule
+└── contract/    consumer-тест і provider verification
+pacts/           згенерований контракт (комітиться — див. нижче)
+```
+
+## Стратегія ізоляції і чому саме вона
+
+**Контейнер-на-конфіг через `globalSetup` + `TRUNCATE … RESTART IDENTITY CASCADE` у
+`beforeEach` integration-шару.** Стратегію «транзакція-ROLLBACK» тут підключити нікуди:
+репозиторії отримують TypeORM `Repository<T>` з DI-контейнера Nest, а `TransactionsService`
+відкриває власну транзакцію всередині себе — обгорнути її ззовні можна лише переписавши
+прод-код, чого одне ДЗ з тестування не варте. `TRUNCATE` натомість працює на рівні БД:
+після нього не лишається нічого навіть тоді, коли тест упав посеред власної транзакції.
+Контейнер піднімається один на весь конфіг (кожен jest-воркер множив би контейнери, тому
+`maxWorkers: 1`) і вмирає разом із прогоном, тож `npm run test:integration && npm run
+test:integration` зелений без жодної ручної чистки — другий прогін просто бачить новий
+Postgres.
+
+E2E-шар навмисно **не** труncat-ить між тестами: свіжий контейнер уже дає ізоляцію між
+прогонами, а частина кейсів (idempotency-replay, проба «баланс не змінився після відкату»)
+саме на накопиченому стані й тримається.
+
+`globalSetup` виконується в батьківському процесі Jest — воркери форкаються після нього й
+успадковують `process.env`. Це єдина причина, чому контейнер піднімається там, а не в
+`beforeAll`: `src/data-source.ts` резолвить підключення **на рівні модуля** і кидає на
+`import`, якщо оточення порожнє.
+
+## Test data builders
+
+`test/testkit/builders.ts` — `aUser()`, `anAccount()`, `anInstrument()`, `anFxRate()`,
+`anEntry()`. Кожен дефолт валідний сам по собі й унікальний на виклик (`randomUUID()` для
+id, лічильник для `email`/`symbol`), тож тест називає лише те поле, про яке він насправді.
+Ніяких стін фікстур і ніяких випадкових колізій із рядком, що лишився від сусіднього тесту.
+
+## Що ловлять integration-тести і не ловить мок
+
+| Тест | Механізм, якого у мока немає |
+|---|---|
+| `accounts` → неіснуючий `user_id` | FK `23503` на `accounts.user_id → users(id)` |
+| `accounts` → повторний id | `23505` duplicate key на PK |
+| `fx-rate` → повторний upsert того самого дня | `ON CONFLICT (source, currency, rate_date) DO UPDATE` |
+| `fx-rate` → JPY за 100 одиниць | генерована колонка `rate = (raw_rate / raw_units)::numeric(20,10) STORED` |
+| `fx-rate` → два джерела на одну дату | `DISTINCT ON … ORDER BY source ASC` у сирому SQL |
+| `fx-rate` → курс для `UAH` | CHECK `fx_rate_base_is_not_quoted` (`23514`) |
+| `transactions` → читання `instrument_symbol` | JOIN через `relations: { instrument: true }` |
+| `transactions` → USD-рядок на UAH-рахунку | композитний FK `transactions_currency_matches_account` |
+
+## Контракт
+
+Consumer — уявний фронтенд `invest-web`; provider — цей застосунок. Один interaction:
+`GET /accounts/{account_id}` з provider state `account 1111… exists`. Шлях і форма
+відповіді взяті зі спеки ДЗ #9 (`openapi/openapi.yaml` → `#/components/schemas/Account`);
+значення описані матчерами `MatchersV3`, а не літералами, щоб новий рядок у базі не ламав
+контракт.
+
+`pacts/invest-web-invest-api.json` **комітиться**: так `npm run verify:provider` працює на
+свіжому клоні без попереднього `npm run test:contract`. CI все одно перегенеровує його
+перед публікацією.
+
+Provider verification ганяє **справжній** застосунок — той самий `createApp()`, що викликає
+`main.ts`, разом із валідатором запитів і відповідей. `stateHandlers` сідають БД через
+`resetDb()` (усі INSERT-и — `ON CONFLICT DO NOTHING`), тож стан можна програвати скільки
+завгодно разів.
+
+Перевірка, що шлях кожного interaction існує у спеці, — окремий крок CI
+(`Check every interaction path exists in the OpenAPI spec`).
+
+## Брокер локально
+
+```bash
+docker compose up -d --wait        # postgres, pgbouncer, pact-broker-db, pact-broker
+open http://127.0.0.1:9292
+```
+
+Брокер має власний Postgres (`pact-broker-db`), а не другу базу в основному: `db/init.sql`
+відпрацьовує лише при створенні тому `pgdata`, тож на наявному томі нова база була б
+невидимою. У healthcheck — `127.0.0.1`, не `localhost`: усередині контейнера `localhost`
+може резолвитись у `::1`, а puma слухає лише IPv4, і `--wait` висів би назавжди.
+
+Локальний брокер піднімається **без auth** — він слухає тільки на localhost, і рецепти з
+`curl` нижче мають працювати дослівно. Хостовий брокер адресується через
+`PACT_BROKER_TOKEN`.
+
+## Секрети
+
+Код читає рівно `process.env.PACT_BROKER_URL` і `process.env.PACT_BROKER_TOKEN` —
+ані адреси, ані токена в репозиторії немає. Два легальні шляхи їх передати:
+
+```bash
+# Основний: значення приїжджають зі сховища ДЗ #11 через ту саму обгортку
+bash scripts/with-secrets.sh dev npm run verify:provider
+
+# Аварійний (і те, що робить грейдер — доступу до сховища в нього немає):
+PACT_BROKER_URL=http://127.0.0.1:9292 npm run verify:provider
+```
+
+Під `SKIP_VAULT=1` обгортка виконує рівно ту саму команду, що й друга форма. У CI обидві
+змінні приходять із GitHub secrets (`.github/workflows/ci.yml`).
+
+Без `PACT_BROKER_URL` верифаєр читає закомічений `pacts/*.json` і нікуди не публікує — саме
+тому `npm run verify:provider` зелений на голому клоні.
+
+## Гейт `can-i-deploy` — обидва стани
+
+Порядок кроків обовʼязковий: `to=prod` питає «чи є перевірений контракт із тією версією
+провайдера, що зараз у prod», і поки жодну версію провайдера не позначено тегом, чесна
+відповідь брокера — `unknown`.
+
+```bash
+docker compose up -d --wait
+export PACT_BROKER_URL=http://127.0.0.1:9292
+SHA=$(git rev-parse --short HEAD)
+
+# 1. публікація контракту
+curl -sS -o /dev/null -w '%{http_code}\n' -X PUT \
+  "$PACT_BROKER_URL/pacts/provider/invest-api/consumer/invest-web/version/$SHA" \
+  -H 'Content-Type: application/json' -d @pacts/invest-web-invest-api.json
+# 201
+
+# 2. верифікація з publishVerificationResult: true
+npm run verify:provider     # exit 0
+
+# 3. ДО тега prod
+curl -sS "$PACT_BROKER_URL/can-i-deploy?pacticipant=invest-web&version=$SHA&to=prod"
+```
+
+```json
+{"summary":{"deployable":null,"reason":"There is no verified pact between version 581cc6e of invest-web and the latest version of invest-api with tag prod (no such version exists)","success":0,"failed":0,"unknown":1}, ...}
+```
+
+```bash
+# 4. тег ставиться на версію ПРОВАЙДЕРА, і саме на той providerVersion,
+#    який передано у Verifier (git rev-parse --short HEAD)
+curl -sS -o /dev/null -w '%{http_code}\n' -X PUT \
+  "$PACT_BROKER_URL/pacticipants/invest-api/versions/$SHA/tags/prod" \
+  -H 'Content-Type: application/json'
+# 201
+
+# 5. ПІСЛЯ тега prod
+curl -sS "$PACT_BROKER_URL/can-i-deploy?pacticipant=invest-web&version=$SHA&to=prod"
+```
+
+```json
+{"summary":{"deployable":true,"reason":"All required verification results are published and successful","success":1,"failed":0,"unknown":0}, ...}
+```
+
+`unknown: 1` → `deployable: true` — це й є доказ, що гейт справжній, а не завжди-зелений.
+Ту саму пару робить `scripts/can-i-deploy.sh`, який падає з exit 1 на всьому, крім
+`"deployable": true`:
+
+```bash
+bash scripts/can-i-deploy.sh invest-web "$SHA" prod   # exit 0
+bash scripts/can-i-deploy.sh invest-web no-such-ver prod
+# can-i-deploy: NOT deployable (deployable=false, unknown=0, failed=0) → exit 1
+```
+
+## CI
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) — дві джоби:
+
+- **test** — `npm ci` → `npx tsc --noEmit` → `test:integration` → `test:e2e`. Service-контейнерів немає: обидві сюїти піднімають Postgres самі.
+- **contract** (`needs: test`) — брокер → `test:contract` → звірка шляхів зі спекою → publish → `verify:provider` з `publishVerificationResult: true` → тег `prod` → **`can-i-deploy`**, який валить джобу, якщо `deployable` не `true`.
+
+`DEBUG=testcontainers*` у CI свідомо не вмикається: бібліотека продовжує логувати після
+завершення тестів, jest ловить «Cannot log after tests are done» і повертає exit 1 при всіх
+зелених тестах.
+
+## Репортер
+
+`reporters: ['default']` стоїть у `jest.config.js` і в кожному з чотирьох конфігів у
+`test/`. Без цього рядка Jest 30 обирає репортер сам, за змінними оточення, і в частині
+середовищ вмикає компактний `agent`: той не друкує ні `PASS <файл>`, ні назв `describe`/`it`,
+ні `✓` — лишається сам підсумок `Tests: N passed`.
