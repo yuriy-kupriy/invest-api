@@ -82,6 +82,9 @@ export class AccountsRepository {
       type: account.type as AccountType,
       balanceCents: account.balance_cents,
       isArchived: false,
+      // Same reason as TransactionsRepository.saveMany: store the created_at
+      // the service returns, not a second now() taken by Postgres.
+      createdAt: new Date(account.created_at),
     });
     await repo.save(entity);
     return account;

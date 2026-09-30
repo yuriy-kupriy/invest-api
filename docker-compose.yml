@@ -59,6 +59,60 @@ services:
       postgres:
         condition: service_healthy
 
+  # Pact broker (homework #16) — where consumer contracts and provider
+  # verification results meet, and what `can-i-deploy` interrogates before a
+  # release. It gets its own Postgres rather than a second database inside the
+  # app's: db/init.sql only runs when the pgdata volume is created, so adding a
+  # database there would be invisible to anyone with an existing volume.
+  pact-broker-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: pact_broker
+      POSTGRES_USER: pact_broker
+      POSTGRES_PASSWORD: pact_broker
+    volumes:
+      - pactbrokerdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U pact_broker -d pact_broker']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  pact-broker:
+    # Pinned by tag AND digest: `latest` would make the can-i-deploy gate depend
+    # on the day it was pulled, and a version tag alone can still be re-pushed.
+    # This is the exact image the README's gate outputs were recorded against.
+    image: pactfoundation/pact-broker:3.0.0-pactbroker2.121.2@sha256:420341d4fbfb00a621c313f47e530ad75703f969bbc7520d0d72bc71bb53cef9
+    environment:
+      PACT_BROKER_DATABASE_ADAPTER: postgres
+      PACT_BROKER_DATABASE_HOST: pact-broker-db
+      PACT_BROKER_DATABASE_NAME: pact_broker
+      PACT_BROKER_DATABASE_USERNAME: pact_broker
+      PACT_BROKER_DATABASE_PASSWORD: pact_broker
+      PACT_BROKER_PORT: '9292'
+      # No basic auth on the local broker on purpose: it listens on localhost
+      # only and the README's curl recipes have to work verbatim. A hosted
+      # broker is reached with PACT_BROKER_TOKEN, which never appears here or
+      # anywhere else in the repo — see README ## Секрети.
+      PACT_BROKER_ALLOW_PUBLIC_READ: 'true'
+    ports:
+      - '${PACT_BROKER_HOST_PORT:-9292}:9292'
+    healthcheck:
+      # 127.0.0.1, not localhost: inside the container localhost can resolve to
+      # ::1 and puma listens on IPv4 only, so the probe would never go green
+      # and `docker compose up -d --wait` would hang.
+      test:
+        [
+          'CMD-SHELL',
+          'wget -q -O /dev/null http://127.0.0.1:9292/diagnostic/status/heartbeat',
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    depends_on:
+      pact-broker-db:
+        condition: service_healthy
+
   # Dev-only DB browser — not part of `docker compose up -d --wait` (grading
   # has no business getting an extra container), opt in with:
   #   docker compose --profile tools up -d pgadmin
@@ -94,3 +148,4 @@ services:
 volumes:
   pgdata:
   pgadmin_data:
+  pactbrokerdata:
