@@ -79,7 +79,10 @@ services:
       retries: 10
 
   pact-broker:
-    image: pactfoundation/pact-broker:latest
+    # Pinned by tag AND digest: `latest` would make the can-i-deploy gate depend
+    # on the day it was pulled, and a version tag alone can still be re-pushed.
+    # This is the exact image the README's gate outputs were recorded against.
+    image: pactfoundation/pact-broker:3.0.0-pactbroker2.121.2@sha256:420341d4fbfb00a621c313f47e530ad75703f969bbc7520d0d72bc71bb53cef9
     environment:
       PACT_BROKER_DATABASE_ADAPTER: postgres
       PACT_BROKER_DATABASE_HOST: pact-broker-db

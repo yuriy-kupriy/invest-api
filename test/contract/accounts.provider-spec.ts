@@ -64,7 +64,11 @@ describe('invest-api provider verification', () => {
   });
 
   it('honours every interaction in the contract', async () => {
-    const output = await new Verifier({
+    // verifyProvider() rejects on any mismatched interaction, so resolving at
+    // all is the assertion. What it resolves WITH is an internal Pact string
+    // ("finished: 0" today) that is not part of its API — pinning it would
+    // break on a Pact upgrade without anything about the contract changing.
+    const verification = new Verifier({
       provider: 'invest-api',
       providerBaseUrl: `http://127.0.0.1:${port}`,
       providerVersion: providerVersion(),
@@ -78,8 +82,6 @@ describe('invest-api provider verification', () => {
       },
     } as VerifierOptions).verifyProvider();
 
-    // verifyProvider() resolves with "finished: 0" and rejects on any
-    // mismatch — the interaction-by-interaction report goes to stdout.
-    expect(output).toBe('finished: 0');
+    await expect(verification).resolves.toBeDefined();
   });
 });

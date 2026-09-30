@@ -54,15 +54,32 @@ describe('invest-api (e2e)', () => {
     expect(res.body.detail).toMatch(/entries/);
   });
 
-  it('creates a transaction on a valid request', async () => {
-    const res = await request(app.getHttpServer())
+  it('creates a transaction and reads the same record back by id', async () => {
+    const created = await request(app.getHttpServer())
       .post('/transactions')
       .set('Idempotency-Key', `e2e-create-${randomUUID()}`)
       .send({ entries: [validEntry] });
 
-    expect(res.status).toBe(201);
-    expect(res.headers['content-type']).toContain('application/json');
-    expect(res.headers['idempotency-replay']).toBeUndefined();
+    expect(created.status).toBe(201);
+    expect(created.headers['content-type']).toContain('application/json');
+    expect(created.headers['idempotency-replay']).toBeUndefined();
+
+    // A 201 only proves the handler returned. Reading it back through a
+    // separate request proves the row was committed, and that what the write
+    // path echoed matches what the read path serves from the database.
+    const [transaction] = created.body.transactions;
+    const fetched = await request(app.getHttpServer()).get(`/transactions/${transaction.id}`);
+
+    expect(fetched.status).toBe(200);
+    expect(fetched.body).toEqual(transaction);
+    expect(fetched.body).toMatchObject({
+      account_id: cashAccountId,
+      type: 'expense',
+      amount_cents: 1250,
+      currency: 'UAH',
+      booked_at: '2026-08-25T10:00:00.000Z',
+      description: 'Lunch',
+    });
   });
 
   it('replays the same 201 for the same key + same body, without creating a new record', async () => {

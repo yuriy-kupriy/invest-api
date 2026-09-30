@@ -53,7 +53,9 @@ describe('AccountsRepository (integration)', () => {
       // bigint comes back as a string from pg; bigintTransformer is what makes
       // this a number, and only a real query exercises it.
       balance_cents: 4242,
-      created_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+      // Exactly what was saved, not "some timestamp": created_at is the
+      // keyset cursor's sort key, and the API returns it from POST /accounts.
+      created_at: account.created_at,
     });
   });
 

@@ -136,6 +136,10 @@ export class TransactionsRepository {
         unitPrice: null,
         bookedAt,
         description: tx.description,
+        // Persist the timestamp the service already put in the response. Left
+        // to @CreateDateColumn, Postgres stamps its own now() a few ms later
+        // and the 201 body disagrees with every later GET of the same row.
+        createdAt: new Date(tx.created_at),
       };
     });
 

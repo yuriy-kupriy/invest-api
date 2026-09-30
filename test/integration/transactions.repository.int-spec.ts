@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { ConfigModule } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -9,28 +8,12 @@ import { Instrument } from '@/entities/instrument.entity';
 import { Transaction as TransactionEntity } from '@/entities/transaction.entity';
 import { FxRatesModule } from '@/fx-rates/fx-rates.module';
 import { Currency } from '@/domain/currency';
-import { Transaction } from '@/domain/transaction';
 import { TransactionsRepository } from '@/transactions/transactions.repository';
-import { CASH_ACCOUNT_ID } from '../testkit/builders';
+import { aTransaction } from '../testkit/builders';
 import { connect, resetDb } from '../testkit/db';
 
 const BROKERAGE_ACCOUNT_ID = '22222222-2222-4222-8222-222222222222';
 
-function aTransaction(overrides: Partial<Transaction> = {}): Transaction {
-  return {
-    id: randomUUID(),
-    account_id: CASH_ACCOUNT_ID,
-    type: 'expense',
-    amount_cents: 4599,
-    currency: Currency.UAH,
-    booked_at: '2026-08-20T12:30:00.000Z',
-    created_at: '2026-08-20T12:30:00.000Z',
-    description: 'Builder transaction',
-    instrument_symbol: null,
-    quantity_micro: null,
-    ...overrides,
-  };
-}
 
 /**
  * The batch write path from HW #14, against the real table. The two things
@@ -95,9 +78,11 @@ describe('TransactionsRepository (integration)', () => {
   });
 
   it('reports an unknown symbol as 422 rather than letting a check constraint surface as a 500', async () => {
+    const unknown = aTransaction({ type: 'buy', instrument_symbol: 'NOSUCHTICKER' });
+
     await expect(
       ds.manager.transaction(async (manager) => {
-        await repo.saveMany([aTransaction({ type: 'buy', instrument_symbol: 'NOSUCHTICKER' })], manager);
+        await repo.saveMany([unknown], manager);
       }),
     ).rejects.toMatchObject({
       code: 'instrument-not-found',
@@ -105,8 +90,7 @@ describe('TransactionsRepository (integration)', () => {
       response: expect.stringContaining('NOSUCHTICKER'),
     });
 
-    expect(await ds.query('SELECT count(*) FROM transactions WHERE description = $1', ['Builder transaction']))
-      .toEqual([{ count: '0' }]);
+    expect(await repo.findById(unknown.id)).toBeUndefined();
   });
 
   it('rejects a transaction whose currency differs from its account (composite foreign key)', async () => {
