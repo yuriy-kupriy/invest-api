@@ -1,0 +1,2 @@
+"postgres" "postgres"
+"invest_app" "dev_local_password"

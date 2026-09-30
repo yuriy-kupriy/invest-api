@@ -1,0 +1,20 @@
+# Nightly backup of the course-project database (homework #15).
+#
+# Install with `crontab backup.cron`, or drop it into /etc/cron.d/ with a user
+# column added after the schedule. The path is the deployment checkout, not a
+# developer machine — cron runs with a minimal environment and no shell profile,
+# so the absolute path and the explicit `cd` are both load-bearing.
+#
+# 03:17 and not 03:00: everything on a host is scheduled on the hour, and a
+# backup has no reason to compete with all of it for the same disk.
+#
+# The wrapper is the same one every other data-layer command uses — the
+# connection string comes out of the vault (homework #11), never out of a file
+# next to the script. On a host without vault access, set SKIP_VAULT=1 and
+# provide DATABASE_URL, exactly as README's ## Grading section does.
+#
+# This schedule is what makes the RPO 24 hours: everything written after one
+# night's dump is lost if the database is lost before the next one. That number
+# is measured and argued in RESTORE-DRILL.md.
+
+17 3 * * * cd /srv/invest-api && bash scripts/with-secrets.sh dev bash scripts/backup.sh >> /var/log/invest-backup.log 2>&1

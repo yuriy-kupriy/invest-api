@@ -11,6 +11,12 @@ spec.json
 secrets/*
 !secrets/db_password.example
 
+# HW #15 database dumps: artifacts, not source. Same negative-pattern shape as
+# secrets/ above — ignore the contents, keep the directory, so scripts/backup.sh
+# has somewhere to write on a fresh clone.
+backups/*
+!backups/.gitkeep
+
 # HW #11 vault wrapper credentials: real Infisical login lives outside git.
 .secrets/*
 !.secrets/infisical.env.example

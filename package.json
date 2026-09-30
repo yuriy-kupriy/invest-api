@@ -29,6 +29,8 @@
     "demo:workers": "bash scripts/with-secrets.sh dev node dist/demo-workers.js",
     "demo:retry": "bash scripts/with-secrets.sh dev node dist/demo-retry.js",
     "report": "bash scripts/with-secrets.sh dev node dist/report.js",
+    "db:backup": "bash scripts/backup.sh",
+    "db:restore-drill": "bash scripts/restore-drill.sh",
     "fx:dump": "bash scripts/fx-rates-snapshot.sh dump",
     "db:fx-rates": "bash scripts/fx-rates-snapshot.sh load"
   },

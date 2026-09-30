@@ -1447,3 +1447,177 @@ violation) детерміновані — повтор просто провал
 | [`src/demo-retry.ts`](src/demo-retry.ts) | барʼєр → `40001` → повтор, перевірка арифметики |
 | [`src/migrations/1789922194647-JobQueue.ts`](src/migrations/1789922194647-JobQueue.ts) | `job_queue` + частковий індекс для claim-запиту |
 | [`src/entities/job.entity.ts`](src/entities/job.entity.ts) | entity черги (`processed`, `worker_id`, `@Check`, частковий `@Index`) |
+
+# ДЗ #15 курсового: PgBouncer, бекапи, restore-drill
+
+База курсового вже має схему (#12), міграції (#13) і транзакції (#14). Це ДЗ додає їй два атрибути
+production-системи: пулер зʼєднань перед Postgres і бекап, у відновленні якого є впевненість, бо він
+відновлений і зміряний — [`RESTORE-DRILL.md`](RESTORE-DRILL.md).
+
+Нового секрета тут не зʼявилось. Змінилось лише значення рядка підключення у сховищі з ДЗ #11: хост і
+порт тепер вказують на PgBouncer. У [`.env.example`](.env.example) оновлено рівно цей рядок-контракт
+(`DB_URL=postgres://invest_app@localhost:6432/invest`), і `npm run check:env` лишається зеленим —
+перевіряються імена ключів, а не значення.
+
+## Data layer ops
+
+```bash
+docker compose up -d --wait                  # postgres + pgbouncer, обидва з healthcheck
+npm run db:backup                            # → backups/invest-2026-09-20_203003.dump
+npm run db:restore-drill                     # → MATCH або ненульовий код
+```
+
+Обидва скрипти запускаються з кореня репо і беруть підключення з оточення, тією самою обгорткою, що
+й усе інше з ДЗ #11:
+
+```bash
+bash scripts/with-secrets.sh dev bash scripts/backup.sh
+bash scripts/with-secrets.sh dev bash scripts/restore-drill.sh
+```
+
+[`scripts/lib/db-url.sh`](scripts/lib/db-url.sh) приймає три форми, у тому самому порядку, що й
+[`src/data-source.ts`](src/data-source.ts): `DATABASE_URL` → `DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME`
+(це інжектить Infisical) → `DB_URL` + пароль із файла. Без жодної з них скрипт падає з
+`DATABASE_URL: unbound variable` і підказкою — нового env-файла ДЗ #15 не заводить.
+
+Дамп і drill **не ходять через пулер і не використовують хостові клієнти**. `pg_dump` і `psql`
+запускаються всередині контейнера `postgres`, бо клієнт не має бути старішим за сервер: хостовий
+`pg_dump 13` проти сервера 16 просто відмовляється працювати. З тієї ж причини `pg_restore --list`
+на хості з клієнтом < 16 скаже `unsupported version (1.15) in file header` — еквівалент, який працює
+завжди:
+
+```bash
+docker compose exec -T postgres pg_restore --list < backups/<файл>.dump
+```
+
+Розклад — у [`backup.cron`](backup.cron): `17 3 * * *`, один дамп на добу, з чого прямо випливає
+RPO ≤ 24 год. `backups/` ігнорується git-ом (артефакти, не код), сама тека лишається в репо.
+
+## Чому transaction mode і що він ламає
+
+`pool_mode = transaction` у [`pgbouncer/pgbouncer.ini`](pgbouncer/pgbouncer.ini) означає, що серверне
+зʼєднання закріплюється за клієнтом на час **однієї транзакції**, а не на час сесії. Це єдиний режим,
+у якому пулер справді щось дає: у session mode кожен клієнт усе одно тримає свій бекенд, і пулер
+вироджується в проксі. Ефект видно числами — `npm run demo:race` відкриває 50 паралельних checkout-ів
+через `DB_POOL_MAX=10`, а на боці Postgres під час цього живе рівно `default_pool_size = 5` бекендів:
+
+```
+$ psql -h 127.0.0.1 -p 6432 -U postgres -d pgbouncer -c "SHOW POOLS"
+ database | user     | cl_active | sv_idle | ... |  pool_mode
+----------+----------+-----------+---------+-----+-------------
+ invest   | postgres |         0 |       5 | ... | transaction
+```
+
+Платить за це клієнт очікуванням: `SHOW STATS` після тієї ж пачки показує `total_wait_time = 581 923`
+мкс на 81 транзакцію. Це і є суть пулера — черга замість відмови.
+
+Що transaction mode ламає:
+
+1. **Іменовані prepared statements.** `PREPARE` живе в сесії, а наступна транзакція того самого
+   клієнта може піти на інший бекенд, де цього імені немає — класичне
+   `prepared statement "S_1" does not exist`. Цьому коду не болить: драйвер `pg` шле unnamed-запити
+   розширеного протоколу, іменованих `PREPARE` у `src/` немає. Страховка на випадок драйвера, який
+   так не вміє, все одно стоїть: `max_prepared_statements = 200` (PgBouncer ≥ 1.21 відстежує їх сам).
+2. **Будь-який сесійний стан.** `SET`/GUC поза транзакцією, `search_path`, сесійні `TEMP TABLE`,
+   `LISTEN/NOTIFY`, сесійні advisory-локи — усе це після `COMMIT` може опинитись «не на тому»
+   бекенді. Тому [`scripts/fx-rates-snapshot.sh`](scripts/fx-rates-snapshot.sh), який робить
+   `CREATE TEMP TABLE` і `COPY` в одній сесії, ходить через `docker compose exec`, а не через 6432.
+3. **`pg_dump` і взагалі все, що хоче один знімок на весь час роботи.** Дамп — це довга послідовність
+   запитів, яка мусить бачити узгоджену картину; transaction mode цього не обіцяє. Тому
+   [`scripts/backup.sh`](scripts/backup.sh) свідомо йде повз пулер.
+4. **Довгі транзакції пінять бекенд на весь свій час.** [`src/concurrency/worker.ts`](src/concurrency/worker.ts)
+   тримає транзакцію відкритою на весь handler (`FOR UPDATE SKIP LOCKED` + обробка), тож
+   `default_pool_size` стає стелею паралелізму воркерів: при чотирьох воркерах і `default_pool_size = 5`
+   `npm run demo:workers` дає 2.30× прискорення, а от пʼятий-шостий воркер уже чекав би в черзі.
+
+Окремо — те, що ламається не в застосунку, а в експлуатації: `SELECT pg_backend_pid()` через пулер
+повертає PID, який наступного разу буде іншим, а `pg_stat_activity` показує зʼєднання пулера, а не
+клієнтів. Шукати «хто тримає локи» тепер треба у два кроки.
+
+Міграції через пулер проходять нормально (`npm run migrate` — це DDL в одній транзакції), але в
+проді їх варто пускати прямо в 5433: міграція не має конкурувати за пʼять зʼєднань із застосунком.
+
+## Ротація пароля і пулер
+
+PgBouncer автентифікує клієнтів за власним списком, тому [`rotate.sh`](rotate.sh) із ДЗ #2 отримав
+четвертий крок — інакше `ALTER ROLE` відпрацював би, а кожне зʼєднання через 6432 почало б падати з
+`SASL authentication failed`. Порядок тепер такий: `ALTER ROLE` → файл із паролем → розрив старих
+зʼєднань → **userlist пулера + SIGHUP**. Без рестарту, як і було обіцяно в розділі
+[«Ротація пароля БД без рестарту»](#ротація-пароля-бд-без-рестарту):
+
+```
+$ bash rotate.sh
+1/4 ALTER ROLE invest_app …
+2/4 updating ./secrets/db_password …
+3/4 terminating existing connections of role invest_app …
+4/4 updating the PgBouncer userlist …
+    userlist rewritten in the running container, SIGHUP sent
+Done: password rotated, connections terminated: 1. No restart needed.
+```
+
+Ротоване значення не потрапляє в git. [`pgbouncer/userlist.txt`](pgbouncer/userlist.txt) монтується
+read-only як `userlist.seed.txt`, контейнер на старті копіює його у записуваний `auth_file`, і
+`rotate.sh` переписує саме копію — так само, як сам пароль живе в `secrets/db_password`, а не у
+відстежуваному файлі. `docker compose up` повертає дев-дефолт із seed-файла.
+
+Чому в userlist plaintext, а не SCRAM-верифікатори: верифікатором можна перевірити клієнта, але не
+можна залогінитись на сервер — PgBouncer не знає з нього пароля. Обидва значення тут і так відкриті
+(`docker-compose.yml` і `db/init.sql`), це дев-креденшели, не прод-секрети.
+
+## Grading
+
+Той самий контракт, що в ДЗ #13 і #14: у грейдера немає доступу до сховища (Infisical, ДЗ #11), тому
+`SKIP_VAULT=1` перемикає [`scripts/with-secrets.sh`](scripts/with-secrets.sh) на прямий `exec`, а
+підключення береться з дев-креденшелів `docker-compose.yml` (вони не є секретом). **Порт 6432** — це
+PgBouncer; Postgres лишається на 5433 для адмін-задач.
+
+```bash
+docker compose up -d --wait
+export DATABASE_URL=postgres://postgres:postgres@127.0.0.1:6432/invest
+export SKIP_VAULT=1    # у грейдера немає доступу до сховища
+bash scripts/with-secrets.sh dev bash scripts/backup.sh
+bash scripts/with-secrets.sh dev bash scripts/restore-drill.sh
+```
+
+Скрипти читають `DATABASE_URL` прямо з оточення, тому голий `bash scripts/backup.sh` після цих
+`export` теж працює — обгортка під `SKIP_VAULT=1` просто виконує його. Обидва запуски дають код 0;
+`backup.sh` друкує шлях створеного дампу останнім рядком, `restore-drill.sh` — `MATCH`. Drill можна
+запускати повторно: контейнер і том він створює й зносить сам.
+
+Перевірка самого пулера — **саме в цьому порядку**, бо пул для `invest` зʼявляється лише після
+першого клієнта:
+
+```bash
+psql -h 127.0.0.1 -p 6432 -U postgres -d invest     -c "SELECT 1"
+psql -h 127.0.0.1 -p 6432 -U postgres -d pgbouncer  -c "SHOW POOLS"
+```
+
+Пароль для обох — `postgres` (`PGPASSWORD=postgres`, або введи в запиті). Другий рядок має показати
+базу `invest` із `pool_mode = transaction`.
+
+Щоб побачити, що через пулер ходить і сам застосунок — той самий набір, що в ДЗ #14, але з портом
+6432:
+
+```bash
+npm ci
+npm run build
+export DB_HOST=127.0.0.1 DB_PORT=6432 DB_USER=postgres DB_PASSWORD=postgres DB_NAME=invest
+npm run migrate
+npm run seed
+npm run demo:race
+npm run demo:workers
+```
+
+## Структура ДЗ #15
+
+| Шлях | Призначення |
+|---|---|
+| [`pgbouncer/pgbouncer.ini`](pgbouncer/pgbouncer.ini) | конфіг пулера: `pool_mode = transaction`, `default_pool_size = 5`, `max_client_conn = 200`, адмін-консоль |
+| [`pgbouncer/userlist.txt`](pgbouncer/userlist.txt) | seed-список користувачів; у контейнері з нього робиться записувана копія |
+| [`docker-compose.yml`](docker-compose.yml) | сервіс `pgbouncer` із опублікованим портом 6432 і healthcheck через адмін-консоль |
+| [`scripts/lib/db-url.sh`](scripts/lib/db-url.sh) | резолвер підключення (`DATABASE_URL` → `DB_*` → `DB_URL`) + запуск клієнтів у контейнері |
+| [`scripts/backup.sh`](scripts/backup.sh) | `pg_dump -Fc` у датований файл, atomic rename, ротація старих дампів |
+| [`scripts/restore-drill.sh`](scripts/restore-drill.sh) | відновлення в чистий том, звірка контрольних значень, `MATCH` або exit ≠ 0 |
+| [`backup.cron`](backup.cron) | нічний розклад — джерело RPO ≤ 24 год |
+| [`RESTORE-DRILL.md`](RESTORE-DRILL.md) | протокол прогону: дата, розмір, час, RTO і RPO числами |
+| [`rotate.sh`](rotate.sh) | + крок 4/4: userlist пулера і SIGHUP, щоб ротація лишалась безрестартною |
