@@ -10,9 +10,11 @@ import { z } from 'zod';
  * it is how a consumer recognises a duplicate. Amounts are integer cents, as
  * everywhere else in the ledger.
  */
-export const orderPlacedSchema = z.object({
+export const ORDER_PLACED = 'order.placed';
+
+const orderPlacedSchema = z.object({
   eventId: z.uuid(),
-  type: z.literal('order.placed'),
+  type: z.literal(ORDER_PLACED),
   occurredAt: z.iso.datetime(),
   data: z.object({
     orderId: z.uuid(),
@@ -27,7 +29,7 @@ export const orderPlacedSchema = z.object({
 export type OrderPlacedEvent = z.infer<typeof orderPlacedSchema>;
 
 export function orderPlaced(data: OrderPlacedEvent['data']): OrderPlacedEvent {
-  return { eventId: randomUUID(), type: 'order.placed', occurredAt: new Date().toISOString(), data };
+  return { eventId: randomUUID(), type: ORDER_PLACED, occurredAt: new Date().toISOString(), data };
 }
 
 /** undefined for anything that is not a valid order.placed — that is a poison message, not a retry. */

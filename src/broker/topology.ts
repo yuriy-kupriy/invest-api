@@ -1,4 +1,5 @@
 import { Channel } from 'amqplib';
+import { ORDER_PLACED } from './order-placed.event';
 
 /**
  * HW #19 topology. Declared by the consumer side (the receipts consumer and the
@@ -8,7 +9,6 @@ import { Channel } from 'amqplib';
  * which is why the publisher also sets `mandatory` (see publisher.ts).
  */
 export const EXCHANGE = 'invest.events';
-export const ORDER_PLACED = 'order.placed';
 export const RECEIPTS_QUEUE = 'orders.placed.receipts';
 export const DLX = 'invest.events.dlx';
 export const DLQ = 'orders.placed.receipts.dlq';
