@@ -1,5 +1,8 @@
 # invest-api — ДЗ #9: OpenAPI-спека курсового проєкту + runtime-валідація на кордоні
 
+> **ДЗ #18 (realtime: WebSocket + SSE)** — запуск, перевірки й `## Trade-offs: WebSocket vs SSE`
+> у розділі [«ДЗ #18 курсового»](#дз-18-курсового-realtime--статус-замовлення-через-websocket-і-sse) в кінці файлу.
+
 Курсовий проєкт Node.js PRO 2. Це ДЗ №1 курсового: спека стає джерелом правди API.
 
 **Обраний варіант contract-частини — Б: runtime-валідація на кордоні** через
@@ -2125,3 +2128,172 @@ node -e 'const k=require("node:crypto").generateKeyPairSync("ec",{namedCurve:"P-
 | [`src/auth/ownership.ts`](src/auth/ownership.ts) | `assertOwner` — 403 для чужого ресурсу після завантаження |
 | [`src/demo-auth.ts`](src/demo-auth.ts), [`src/demo-reuse.ts`](src/demo-reuse.ts), [`src/demo-rbac.ts`](src/demo-rbac.ts) | три демо; спільна обвʼязка — [`src/demo-auth-kit.ts`](src/demo-auth-kit.ts) |
 | [`openapi/openapi.yaml`](openapi/openapi.yaml) | `/auth/*`, `bearerAuth`, `401`/`403` на захищених операціях |
+
+---
+
+# ДЗ #18 курсового: realtime — статус замовлення через WebSocket і SSE
+
+Досі власник замовлення дізнавався про зміну статусу лише після перезавантаження сторінки.
+Тепер подія `order.status` доходить до підключеного клієнта миттєво — двома транспортами з
+однієї шини подій.
+
+**Що тут «замовлення».** Це рядок `transactions` (checkout з ДЗ #14 пише їх як `buy`), статус —
+`pending | posted | failed`. Новий `PATCH /orders/{id}/status` міняє його транзакційно: `SELECT … FOR
+UPDATE` рядка, перевірка власника (`assertOwner`, через `accounts.user_id`), `UPDATE` статусу і,
+якщо замовлення перетнуло межу «проведене / ні», корекція балансу рахунку — усе в одній
+DB-транзакції. Подія публікується **після COMMIT** з [`OrdersService`](src/orders/orders.service.ts),
+а не з контролера: клієнт ніколи не почує про статус, якого відкат не лишив.
+
+## Grading
+
+Підготовка — як у ДЗ #24 (немає доступу до сховища → `SKIP_VAULT=1`, одноразова пара ES256),
+плюс сід двох демо-замовлень і запуск застосунку на `:3000`:
+
+```bash
+docker compose up -d --wait
+export DB_URL=postgres://postgres@127.0.0.1:6432/invest
+printf postgres > /tmp/invest-db-password && export DB_PASSWORD_FILE=/tmp/invest-db-password
+export SKIP_VAULT=1 FX_SYNC_ON_START=0
+
+node -e 'const {generateKeyPairSync}=require("node:crypto");
+const k=generateKeyPairSync("ec",{namedCurve:"P-256",
+  privateKeyEncoding:{type:"pkcs8",format:"pem"},
+  publicKeyEncoding:{type:"spki",format:"pem"}});
+const fs=require("node:fs");
+fs.writeFileSync("/tmp/priv.b64",Buffer.from(k.privateKey).toString("base64"));
+fs.writeFileSync("/tmp/pub.b64",Buffer.from(k.publicKey).toString("base64"));'
+export JWT_KID=grader
+export JWT_PRIVATE_KEY="$(cat /tmp/priv.b64)"
+export JWT_PUBLIC_KEY="$(cat /tmp/pub.b64)"
+export REFRESH_TOKEN_PEPPER=grader-pepper
+
+npm ci
+npm run build                  # nest build = tsc → dist/ (tsx не емітить декоратор-метадані)
+npm run migrate
+npm run seed:realtime          # 2 користувачі, 2 pending-замовлення A і B з фіксованими id
+npm run start:vault > /tmp/invest-api.log 2>&1 &   # node dist/main.js на :3000
+until curl -sf localhost:3000/health > /dev/null; do sleep 1; done
+```
+
+`seed:realtime` можна перезапускати: він видаляє й заново створює своїх користувачів, каскад
+скидає їхні рахунок, замовлення й баланс. Фіксовані значення:
+
+| | |
+|---|---|
+| замовлення A | `00000018-0000-4000-8000-00000000000a` |
+| замовлення B | `00000018-0000-4000-8000-00000000000b` |
+| власник обох | `rt-owner@example.com` / `demo-password-18` |
+| чужий користувач | `rt-other@example.com` / `demo-password-18` |
+
+Перевірки — рівно ці команди, з фактичним виводом:
+
+```bash
+ORDER_A=00000018-0000-4000-8000-00000000000a
+TOKEN=$(curl -s -X POST localhost:3000/auth/login -H 'content-type: application/json' \
+  -d '{"email":"rt-owner@example.com","password":"demo-password-18"}' \
+  | node -pe 'JSON.parse(require("fs").readFileSync(0)).access_token')
+patch() { curl -s -X PATCH localhost:3000/orders/$ORDER_A/status -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' -d "{\"status\":\"$1\"}"; echo; }
+
+# 1. SSE-заголовок
+curl -sN --max-time 2 -D - -o /dev/null http://localhost:3000/orders/$ORDER_A/events | grep -i '^content-type'
+# Content-Type: text/event-stream
+
+# 2. Формат події: стрім відкритий, статус міняється паралельно
+(sleep 1; patch failed > /dev/null) & curl -sN --max-time 5 http://localhost:3000/orders/$ORDER_A/events; wait
+# retry: 1000
+#
+# id: 1
+# event: order.status
+# data: {"id":1,"order_id":"00000018-…-00000000000a","status":"failed","changed_at":"…"}
+
+# 3. Last-Event-ID: ще 4 зміни (події 2..5), потім реконект «після 3»
+for s in posted failed pending posted; do patch $s; done
+curl -sN --max-time 2 -H 'Last-Event-ID: 3' http://localhost:3000/orders/$ORDER_A/events | grep '^id:' | head -1
+# id: 4
+
+# 4. Ізоляція кімнат: основний і контрольний прогони
+node scripts/realtime-demo.mjs;             echo "exit=$?"
+# ANON_JOIN=denied
+# FOREIGN_JOIN=denied
+# A_RECEIVED=1
+# B_RECEIVED=0
+# exit=0
+node scripts/realtime-demo.mjs --same-room; echo "exit=$?"
+# ANON_JOIN=denied
+# FOREIGN_JOIN=denied
+# A_RECEIVED=1
+# B_RECEIVED=1
+# exit=0
+```
+
+Номери подій — наскрізні для процесу (не на замовлення) і починаються з 1 на кожному старті, тож
+після прогону демо id у пункті 3 будуть більші; критерій «перший `id:` > 3» від цього не залежить.
+
+## Як це влаштовано
+
+Одна шина — два транспорти.
+[`OrderEventsService`](src/orders/order-events.service.ts) — `Subject` + кільцевий буфер останніх
+1000 подій з наскрізним зростаючим `id`. Ні gateway, ні SSE-контролер подій не зберігають — обидва
+читають цю шину.
+
+**WebSocket** ([`orders.gateway.ts`](src/orders/orders.gateway.ts), socket.io на тому ж порту).
+Клієнт підключається з `auth: { token: <access token> }` і шле `join { orderId }`. Handler перевіряє
+токен тими ж правилами, що й `JwtStrategy` (`TokensService.verifyAccess`: `kid`, allowlist ES256,
+iss/aud/exp, денилист), а власника — тим самим `TransactionsService.getById`, що й HTTP (404/403).
+Відповідь — ack: `{ ok: true, room: "orders:<id>" }` або `{ ok: false, error: "unauthorized" |
+"forbidden" | "transaction-not-found" }`; анонім і чужий у кімнату не потрапляють. Емісія —
+тільки `server.to("orders:<id>").emit("order.status", …)`, ніколи не `server.emit`.
+
+**SSE** ([`orders.controller.ts`](src/orders/orders.controller.ts), `GET /orders/{id}/events`).
+Написаний руками, а не через `@Sse()`: Nest нумерує кожне повідомлення без `id`, тож кадр
+`retry: 1000` отримав би `id: 1` і зламав би `Last-Event-ID`. Після `writeHead` першим іде
+`retry: 1000` (реконект за секунду, а не за дефолтні кілька), далі — пропущені події з буфера з
+`id > Last-Event-ID` (без заголовка — увесь буфер замовлення), далі — живий потік. Replay і
+підписка відбуваються в одному синхронному тіку, тож між ними не проскакує жодна подія: ні
+пропусків, ні дублів. SSE-маршрут публічний — `EventSource` не вміє слати `Authorization`, а
+грейдерський `curl` іде без токена; у потоці лише `{id, status}` замовлення з некерованим uuid
+(у коді позначено `shortcut:`; апгрейд — cookie або короткоживучий stream-ticket).
+
+**Демо** ([`scripts/realtime-demo.mjs`](scripts/realtime-demo.mjs)): логін → два клієнти
+приєднуються до кімнат і **чекають ack** → лише потім `PATCH` статусу A → секунда очікування →
+`A_RECEIVED` / `B_RECEIVED`. Кімната клієнта B і очікуване `B_RECEIVED` беруться з одного рядка
+(`--same-room` → кімната A, очікуємо 1), тож обидва прогони йдуть тим самим кодом. Заодно скрипт
+перевіряє відмови: анонімний і чужий `join` мають отримати `ok: false`, інакше exit 1. Скрипт
+завершується сам (запобіжник 15 с). Перевірено ламанням: `server.emit` замість `server.to(room)` →
+основний прогін друкує `B_RECEIVED=1`, `ISOLATION VIOLATED…`, exit 1.
+
+## Trade-offs: WebSocket vs SSE
+
+Для нотифікацій про статус у проді я лишив би **SSE**: потік однобічний (сервер → клієнт), а SSE
+дає реконект і дочитування пропущеного (`Last-Event-ID`) «з коробки» браузера і йде звичайним
+HTTP крізь будь-які проксі, балансувальники й HTTP/2. WebSocket виправданий там, де клієнт теж
+активно шле повідомлення (чат, спільне редагування, торгівельний термінал) — тоді його ціна за
+окремий протокол і ручне відновлення окупається.
+
+| Критерій | WebSocket (socket.io) | SSE |
+|---|---|---|
+| Напрям каналу | двобічний: клієнт шле `join`, сервер — події | однобічний: лише сервер → клієнт; команди окремими HTTP-запитами |
+| Реконект і відновлення | реконект робить socket.io-клієнт, але пропущене за час розриву втрачено — треба власний replay і повторний `join` | браузер сам реконектиться (`retry:`) і шле `Last-Event-ID`; сервер дочитує з буфера |
+| Вимоги до інфраструктури | `Upgrade`-хендшейк, sticky sessions для polling-фолбеку, проксі мають пропускати WS | звичайний довгий HTTP-відгук; треба лише вимкнути буферизацію (`X-Accel-Buffering: no`) і таймаути простою |
+| Ціна на подію | малий фрейм (2–14 байт заголовка) + обгортка socket.io | текстовий кадр `id:/event:/data:` — кілька десятків байт, лише UTF-8 |
+| Автентифікація | токен у handshake (`auth`), перевірка один раз на `join` | `EventSource` не шле заголовків → cookie, query-ticket або публічний потік |
+| Ліміт зʼєднань | одне зʼєднання на вкладку, мультиплексується кімнатами | у HTTP/1.1 браузер тримає ≤ 6 зʼєднань на домен; у HTTP/2 — не проблема |
+
+**Два і більше інстанси.** `server.to(room)` бачить лише сокети свого процесу, а буфер SSE — лише
+події свого процесу, тож клієнт на інстансі 2 не почує зміну, оброблену інстансом 1, і не
+дочитає її після реконекту; лікується `@socket.io/redis-adapter` (pub/sub кімнат між інстансами)
+плюс спільним буфером подій (Redis Streams) замість памʼяті процесу.
+
+## Структура ДЗ #18
+
+| Файл | Що там |
+|---|---|
+| [`src/orders/order-events.service.ts`](src/orders/order-events.service.ts) | шина: `Subject` + буфер останніх 1000 подій, `since(orderId, lastId)`; спільна для WS і SSE |
+| [`src/orders/orders.gateway.ts`](src/orders/orders.gateway.ts) | `@WebSocketGateway()`: `join`, перевірка токена й власника, кімната `orders:<id>` |
+| [`src/orders/orders.controller.ts`](src/orders/orders.controller.ts) | `PATCH /orders/{id}/status`; `GET /orders/{id}/events` — SSE з `id:` і `Last-Event-ID` |
+| [`src/orders/orders.service.ts`](src/orders/orders.service.ts) | зміна статусу в DB-транзакції, публікація події після COMMIT |
+| [`src/auth/tokens.service.ts`](src/auth/tokens.service.ts) | `verifyAccess` — перевірка access-токена поза passport (WS-хендшейк) |
+| [`src/seed-realtime.ts`](src/seed-realtime.ts) | `npm run seed:realtime`: демо-користувачі й замовлення A/B |
+| [`scripts/realtime-demo.mjs`](scripts/realtime-demo.mjs) | headless-демо ізоляції кімнат + контрольний `--same-room` |
+| [`openapi/openapi.yaml`](openapi/openapi.yaml) | `/orders/{order_id}/status`, `/orders/{order_id}/events` (`text/event-stream`) |

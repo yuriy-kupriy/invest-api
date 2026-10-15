@@ -8,6 +8,7 @@ import { CurrenciesModule } from '@/currencies/currencies.module';
 import { DbModule } from '@/db/db.module';
 import { FxRatesModule } from '@/fx-rates/fx-rates.module';
 import { HealthModule } from '@/health/health.module';
+import { OrdersModule } from '@/orders/orders.module';
 import { IdempotencyInterceptor } from '@/shared/idempotency.interceptor';
 import { ProblemExceptionFilter } from '@/shared/problem.filter';
 import { TransactionsModule } from '@/transactions/transactions.module';
@@ -29,6 +30,7 @@ import { TransactionsModule } from '@/transactions/transactions.module';
     CurrenciesModule,
     FxRatesModule,
     TransactionsModule,
+    OrdersModule,
   ],
   providers: [
     {

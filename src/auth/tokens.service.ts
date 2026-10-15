@@ -5,7 +5,7 @@ import { JwtService } from '@nestjs/jwt';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { Env } from '@/config/env.schema';
-import { Role } from './auth.types';
+import { AuthUser, Role } from './auth.types';
 
 export const JWT_ISSUER = 'invest-api';
 export const JWT_AUDIENCE = 'invest-api';
@@ -23,6 +23,8 @@ function keyFingerprint(publicKeyPem: Buffer): string {
 export class TokensService {
   private readonly logger = new Logger(TokensService.name);
   private readonly pepper: string;
+  private readonly kid: string;
+  private readonly publicKey: Buffer;
 
   constructor(
     private readonly jwt: JwtService,
@@ -30,6 +32,8 @@ export class TokensService {
     config: ConfigService<Env, true>,
   ) {
     this.pepper = config.get('REFRESH_TOKEN_PEPPER', { infer: true });
+    this.kid = config.get('JWT_KID', { infer: true });
+    this.publicKey = config.get('JWT_PUBLIC_KEY', { infer: true });
     this.logger.log(
       `jwt kid=${config.get('JWT_KID', { infer: true })} key=${keyFingerprint(config.get('JWT_PUBLIC_KEY', { infer: true }))}`,
     );
@@ -48,6 +52,24 @@ export class TokensService {
   /** HMAC with the vault pepper: a leaked table alone cannot be matched against anything. */
   hashRefresh(token: string): string {
     return createHmac('sha256', this.pepper).update(token).digest('hex');
+  }
+
+  /**
+   * JwtStrategy's checks for callers outside passport (the WS handshake): same
+   * kid, ES256 allowlist, iss/aud/exp, denylist. Throws on any failure.
+   */
+  async verifyAccess(token: string): Promise<AuthUser> {
+    if (this.jwt.decode(token, { complete: true })?.header?.kid !== this.kid) {
+      throw new Error('unknown kid');
+    }
+    const payload = await this.jwt.verifyAsync<{ sub: string; role: Role; sid: string; jti: string; exp: number }>(
+      token,
+      { publicKey: this.publicKey, algorithms: ['ES256'], issuer: JWT_ISSUER, audience: JWT_AUDIENCE },
+    );
+    if (await this.isRevoked(payload.jti)) {
+      throw new Error('access token was revoked');
+    }
+    return { id: payload.sub, role: payload.role, jti: payload.jti, sid: payload.sid, exp: payload.exp };
   }
 
   async isRevoked(jti: string): Promise<boolean> {
