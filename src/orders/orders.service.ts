@@ -8,6 +8,7 @@ import { TransactionType } from '@/domain/transaction';
 import { TransactionStatus } from '@/entities/transaction.entity';
 import { problem } from '@/shared/problem.exception';
 import { SIGN } from '@/transactions/transactions.service';
+import { OrderStatusDto } from './dto/order.dto';
 import { OrderEventsService } from './order-events.service';
 
 interface LockedOrder {
@@ -32,11 +33,7 @@ export class OrdersService {
    * DB transaction; the event goes out only after COMMIT, so a client is never
    * told about a status that was rolled back.
    */
-  async changeStatus(
-    orderId: string,
-    status: TransactionStatus,
-    user: AuthUser,
-  ): Promise<{ id: string; status: TransactionStatus }> {
+  async changeStatus(orderId: string, status: TransactionStatus, user: AuthUser): Promise<OrderStatusDto> {
     const changed = await this.dataSource.transaction(async (manager) => {
       const rows: LockedOrder[] = await manager.query(
         `SELECT t.status, t.type, t.amount_cents, t.account_id, a.user_id

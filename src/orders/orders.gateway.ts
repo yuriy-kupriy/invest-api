@@ -7,18 +7,18 @@ import {
   WebSocketGateway,
   WebSocketServer,
 } from '@nestjs/websockets';
+import { isUUID } from 'class-validator';
 import { Subscription } from 'rxjs';
 import { Server, Socket } from 'socket.io';
-import { AuthUser } from '@/auth/auth.types';
 import { Public } from '@/auth/decorators';
 import { TokensService } from '@/auth/tokens.service';
 import { ProblemException } from '@/shared/problem.exception';
 import { TransactionsService } from '@/transactions/transactions.service';
 import { OrderEventsService } from './order-events.service';
 
-export type JoinAck = { ok: true; room: string } | { ok: false; error: string };
+type JoinAck = { ok: true; room: string } | { ok: false; error: string };
 
-export const orderRoom = (orderId: string): string => `orders:${orderId}`;
+const orderRoom = (orderId: string): string => `orders:${orderId}`;
 
 /**
  * Same port as HTTP (engine.io takes /socket.io/ before Express sees it).
@@ -55,15 +55,16 @@ export class OrdersGateway implements OnGatewayInit, OnModuleDestroy {
   @SubscribeMessage('join')
   async join(@ConnectedSocket() client: Socket, @MessageBody() body: { orderId?: unknown }): Promise<JoinAck> {
     const token: unknown = client.handshake.auth?.token;
-    let user: AuthUser;
-    try {
-      if (typeof token !== 'string') throw new Error('no token');
-      user = await this.tokens.verifyAccess(token);
-    } catch {
+    const user = typeof token === 'string' ? await this.tokens.verifyAccess(token).catch(() => null) : null;
+    if (!user) {
       return { ok: false, error: 'unauthorized' };
     }
 
-    const orderId = typeof body?.orderId === 'string' ? body.orderId : '';
+    // Same rule as OrderIdParamDto; anything else would only reach Postgres to fail there.
+    const orderId = body?.orderId;
+    if (typeof orderId !== 'string' || !isUUID(orderId, '4')) {
+      return { ok: false, error: 'transaction-not-found' };
+    }
     try {
       // Already 404 for a missing row and 403 for someone else's.
       await this.transactions.getById(orderId, user);
@@ -71,9 +72,9 @@ export class OrdersGateway implements OnGatewayInit, OnModuleDestroy {
       if (error instanceof ProblemException) {
         return { ok: false, error: error.code };
       }
-      // A non-uuid id makes Postgres throw; to the client that is just "not found".
-      this.logger.warn(`join ${orderId}: ${error instanceof Error ? error.message : error}`);
-      return { ok: false, error: 'order-not-found' };
+      // Not rethrown: the global filter writes HTTP responses and has none to write to here.
+      this.logger.error(`join ${orderId}: ${error instanceof Error ? error.message : error}`);
+      return { ok: false, error: 'internal' };
     }
 
     const room = orderRoom(orderId);

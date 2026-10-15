@@ -28,14 +28,13 @@ export class OrderEventsService {
 
   readonly events$: Observable<OrderStatusEvent> = this.subject.asObservable();
 
-  publish(orderId: string, status: TransactionStatus): OrderStatusEvent {
+  publish(orderId: string, status: TransactionStatus): void {
     const event = { id: ++this.seq, order_id: orderId, status, changed_at: new Date().toISOString() };
     this.buffer.push(event);
     if (this.buffer.length > BUFFER_SIZE) {
       this.buffer.shift();
     }
     this.subject.next(event);
-    return event;
   }
 
   /** Buffered events of one order with id > lastId, oldest first. */

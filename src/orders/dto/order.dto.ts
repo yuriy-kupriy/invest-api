@@ -1,8 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsIn, IsUUID } from 'class-validator';
-import { TransactionStatus } from '@/entities/transaction.entity';
-
-const STATUSES: TransactionStatus[] = ['pending', 'posted', 'failed'];
+import { TRANSACTION_STATUSES, TransactionStatus } from '@/entities/transaction.entity';
 
 export class OrderIdParamDto {
   @ApiProperty({ format: 'uuid', example: '00000018-0000-4000-8000-00000000000a' })
@@ -11,8 +9,8 @@ export class OrderIdParamDto {
 }
 
 export class ChangeOrderStatusDto {
-  @ApiProperty({ enum: STATUSES })
-  @IsIn(STATUSES)
+  @ApiProperty({ enum: TRANSACTION_STATUSES })
+  @IsIn(TRANSACTION_STATUSES)
   status!: TransactionStatus;
 }
 
@@ -20,6 +18,6 @@ export class OrderStatusDto {
   @ApiProperty({ format: 'uuid' })
   id!: string;
 
-  @ApiProperty({ enum: STATUSES })
+  @ApiProperty({ enum: TRANSACTION_STATUSES })
   status!: TransactionStatus;
 }
