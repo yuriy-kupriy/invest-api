@@ -163,7 +163,8 @@ OpenApiValidator.middleware({
 ```
 express.json()
   → OpenApiValidator.middleware()   ← валідація запиту
-  → IdempotencyMiddleware           ← після неї: ключ не резервується під тіло, яке спека відхилила
+  → JwtAuthGuard → RolesGuard       ← з ДЗ #24
+  → IdempotencyInterceptor          ← після валідатора: ключ не резервується під тіло, яке спека відхилила
   → NestJS controller → service → in-memory repository
   → exception filter / Express error handler → problem+json
 ```
@@ -1129,7 +1130,7 @@ npm run db:fixtures
 ([test/app.e2e-spec.ts](test/app.e2e-spec.ts)): батч із двох entries, друга — `buy` з неіснуючим
 тикером; після 4xx баланс рахунку не змінився, а першої entry в базі немає.
 
-Наслідок для Idempotency-Key: [idempotency.middleware.ts](src/shared/idempotency.middleware.ts)
+Наслідок для Idempotency-Key: [idempotency.interceptor.ts](src/shared/idempotency.interceptor.ts)
 кешує для відтворення **лише 201**, а на будь-яку помилку — і 4xx, і 5xx — звільняє ключ, бо саме
 заради повтору ключ і видається.
 
@@ -1824,3 +1825,303 @@ bash scripts/can-i-deploy.sh invest-web no-such-ver prod
 `test/`. Без цього рядка Jest 30 обирає репортер сам, за змінними оточення, і в частині
 середовищ вмикає компактний `agent`: той не друкує ні `PASS <файл>`, ні назв `describe`/`it`,
 ні `✓` — лишається сам підсумок `Tests: N passed`.
+
+---
+
+# ДЗ #24 курсового: автентифікація, ротація refresh із детекцією повтору, RBAC
+
+Досі `POST /accounts` і `POST /transactions` міг зробити будь-хто, а кожен новий рахунок
+записувався на зашитого seed-користувача. Тепер API закритий: логін видає пару токенів,
+кожен захищений маршрут вимагає access-токен, а дві дисципліни розведені жорстко —
+**автентифікація** («хто це?», перевіряється криптографією, помилка → `401`) і
+**авторизація** («чи можна йому це?», залежить від даних, яких у токені немає, → `403`).
+
+## Grading
+
+Той самий контракт, що в ДЗ #13–#16: у грейдера немає доступу до сховища (Infisical, ДЗ #11),
+тому `SKIP_VAULT=1` перемикає [`scripts/with-secrets.sh`](scripts/with-secrets.sh) на прямий
+`exec`, а значення приходять `export`-ом. `package.json` лежить у корені репо — `cd` не потрібен.
+Підключення — дев-креденшели `docker-compose.yml` через PgBouncer (порт 6432); вони не є
+секретом. Пароль, як і в застосунку, — у файлі, не в URL (`DB_URL` з паролем схема відкидає).
+
+Ключ підпису грейдеру не потрібен — справжній лишається у сховищі. Блок нижче генерує
+одноразову пару **ES256 (EC P-256)** прямо на місці; PEM їде в base64, щоб багаторядковість
+пережила `export`.
+
+```bash
+docker compose up -d --wait
+export DB_URL=postgres://postgres@127.0.0.1:6432/invest
+printf postgres > /tmp/invest-db-password && export DB_PASSWORD_FILE=/tmp/invest-db-password
+export SKIP_VAULT=1            # у грейдера немає доступу до сховища
+
+# одноразова пара ES256 для прогону; PEM їде в base64
+node -e 'const {generateKeyPairSync}=require("node:crypto");
+const k=generateKeyPairSync("ec",{namedCurve:"P-256",
+  privateKeyEncoding:{type:"pkcs8",format:"pem"},
+  publicKeyEncoding:{type:"spki",format:"pem"}});
+const fs=require("node:fs");
+fs.writeFileSync("/tmp/priv.b64",Buffer.from(k.privateKey).toString("base64"));
+fs.writeFileSync("/tmp/pub.b64",Buffer.from(k.publicKey).toString("base64"));'
+
+export JWT_KID=grader
+export JWT_PRIVATE_KEY="$(cat /tmp/priv.b64)"
+export JWT_PUBLIC_KEY="$(cat /tmp/pub.b64)"
+export REFRESH_TOKEN_PEPPER=grader-pepper
+
+npm ci
+npx tsc --noEmit
+npm run build
+npm run migrate
+npm run demo:auth
+npm run demo:reuse
+npm run demo:rbac
+```
+
+`--wait` обовʼязковий: без нього демо стартує раніше, ніж Postgres приймає зʼєднання.
+Кожне демо саме збирає `dist/`, саме накочує міграції і саме приводить свій стан до чистого
+(видаляє й заново створює трьох демо-користувачів — каскад прибирає їхні рахунки й
+refresh-токени), тому їх можна запускати повторно й у будь-якому порядку: числа не плавають.
+Застосунок демо піднімає у своєму ж процесі на ефемерному порту (`app.listen(0)`) — той самий
+`createApp()`, що й `main.ts`, з валідатором OpenAPI і глобальними гардами, — тож ні
+`EADDRINUSE`, ні сервера-сироти після вбитого `npm`.
+
+Фактичний вивід (рядки логів Nest пропущено):
+
+```
+$ npm run demo:auth
+login=200
+no-token=401
+with-token=200
+refresh=200
+logout=204
+after-logout=401
+refresh-after-logout=401
+
+$ npm run demo:reuse
+WARN [AuthService] refresh token reuse detected — family revoked family_id=4f71696f-… user_id=00000024-…-000000000001
+login=200
+r1-refresh=200
+r1-reuse=401
+r2-after-reuse=401
+
+$ npm run demo:rbac
+role-allowed=201
+anon=401
+own=200
+foreign=403
+role-denied=403
+tampered=401
+```
+
+Будь-яка розбіжність з очікуваним друкує `INVARIANT VIOLATED: <ключ>: expected …, got …` і дає
+exit 1. Перевірено ламанням: прибране відкликання сімʼї → `r2-after-reuse=200`, exit 1; прибрана
+перевірка денилиста → `after-logout=200`, exit 1.
+
+## Auth
+
+### Що чому відповідає в домені
+
+| Критерій ДЗ (Marketplace) | Тут | Чому |
+|---|---|---|
+| ресурс із власником (`orders`) | `accounts` (і `transactions` через свій рахунок) | `accounts.user_id NOT NULL`; рахунок — це гроші конкретної людини |
+| запис лише привілейованою роллю (`products`) | `POST /accounts`, `POST /transactions` — лише роль `member` | роль `viewer` — член сімʼї чи бухгалтер з доступом лише на читання; запис дістає `403` |
+
+### Змінні
+
+| Змінна | Джерело | Навіщо |
+|---|---|---|
+| `JWT_KID` | сховище (#11) | `kid` у заголовку access-токена — за ним верифікатор обирає публічний ключ |
+| `JWT_PRIVATE_KEY` | сховище (#11) | base64 від PKCS#8 PEM, EC P-256 — підпис access-токенів |
+| `JWT_PUBLIC_KEY` | сховище (#11) | base64 від SPKI PEM — перевірка підпису |
+| `REFRESH_TOKEN_PEPPER` | сховище (#11) | ключ HMAC для `refresh_tokens.token_hash` |
+| `DB_URL` | compose / оточення | хост, порт, користувач, база; без пароля |
+| `DB_PASSWORD_FILE` | compose / оточення | шлях до файлу з паролем БД (ротація без рестарту, ДЗ #2) |
+
+Жодна з чотирьох змінних сховища не має дефолту в [`env.schema.ts`](src/config/env.schema.ts):
+дефолт для ключа підпису — це ключ, зашитий у код. Ціна витоку `DB_URL` — доступ до бази з
+мережі; ціна витоку `JWT_PRIVATE_KEY` — можливість виписати собі токен будь-кого без жодного
+доступу. Тому голий `npm run start` без них падає з exit 1 і називає кожну змінну:
+
+```
+Invalid environment configuration (4 variables):
+  - JWT_KID: Invalid input: expected string, received undefined
+  - JWT_PRIVATE_KEY: Invalid input: expected string, received undefined
+  - JWT_PUBLIC_KEY: Invalid input: expected string, received undefined
+  - REFRESH_TOKEN_PEPPER: Invalid input: expected string, received undefined
+```
+
+Валідація стоїть у `ConfigModule.forRoot({ validate })` — першому імпорті `AppModule`, до того
+як TypeORM і `pg.Pool` відкривають зʼєднання, тож голий старт падає на конфігу, а не на
+`ECONNREFUSED`. Ключі ще й парсяться там же (`createPrivateKey`/`createPublicKey` +
+`asymmetricKeyType === 'ec'`): зіпсований base64 чи RSA-ключ ловиться на старті, а не
+`DECODER routines::unsupported` на першому логіні. `npm run start:vault` і всі три демо йдуть
+через `bash scripts/with-secrets.sh dev …`, рівно як `migrate`/`seed`.
+
+### Стек: Nest + Passport, і чому поки не OIDC
+
+Канонічна схема з документації NestJS («Authentication» / «Authorization»):
+`@nestjs/passport` + `passport-local` для логіну, `passport-jwt` для access-токена, `@nestjs/jwt`
+для підпису, глобальний `JwtAuthGuard` з `@Public()` і `RolesGuard` на `Reflector`
+([`src/auth/`](src/auth)). Refresh-токен свідомо **не** йде через passport-стратегію: він
+непрозорий і перевіряється пошуком HMAC-хешу в базі, а не підписом.
+
+OIDC/OAuth2 — це делегування логіну чужому IdP (Лекція 25). Тут же предмет ДЗ — власна
+видача пари, власна таблиця refresh-сімей і reuse-детекція; з IdP цього коду в нас просто не
+було б, і `demo:reuse` нічого б не доводив. Код розкладений так, що в #25 міняються лише
+`LocalStrategy` і видача токенів, а гарди, `@Roles()` і перевірки власності лишаються: OIDC не
+додає нової криптографії, лише стандартизує обмін.
+
+### Підпис: ES256 і явний allowlist
+
+Обрано **ES256** (ECDSA P-256 + SHA-256). OWASP позначає RS256 як «Not recommended» (PKCS#1 v1.5)
+і радить ES256 / PS256 / EdDSA; з них ES256 — найширше підтримуваний у бібліотеках і JWKS, а
+підпис у 64 байти замість 256 у RS256 робить токен, що їде в кожному запиті, коротшим. EdDSA
+теж добрий вибір, але підтримка в `jsonwebtoken` (під `passport-jwt` і `@nestjs/jwt`) відсутня.
+
+Верифікація має явний `algorithms: ['ES256']` у двох місцях — `StrategyOptions` у
+[`jwt.strategy.ts`](src/auth/jwt.strategy.ts) і `verifyOptions` у
+[`auth.module.ts`](src/auth/auth.module.ts). Це єдиний надійний запобіжник від algorithm
+confusion (RFC 8725 §3.1): без нього `alg` береться з заголовка, який контролює атакувальник
+(`none`, або `HS256` з публічним ключем у ролі HMAC-секрету). Плюс `issuer`/`audience`.
+`tampered=401` у `demo:rbac` — доказ, що підпис перевіряється, а не `decode()`-ається:
+рішення на `jwt.decode()` віддало б там `201`.
+
+### Overlap-ротація ключа підпису і роль `kid`
+
+Кожен access-токен несе `kid`; `JwtStrategy` обирає публічний ключ **за `kid`** із мапи
+(`secretOrKeyProvider`), а невідомий `kid` — це `401`. Ротація без розлогінювання всіх:
+
+1. у сховищі зʼявляється нова пара з новим `JWT_KID`; старий публічний ключ лишається в мапі
+   верифікатора під своїм `kid`;
+2. з цього моменту підписує лише новий ключ, а перевіряються обидва;
+3. через `ACCESS_TTL` (10 хв) після перемикання жодного токена старого ключа живим не лишилось —
+   старий `kid` прибирається з мапи.
+
+Без `kid` верифікатору довелося б перебирати ключі навмання. Зараз у мапі один запис (другого
+ключа поки немає), але точка розширення саме ця. Refresh-токени ротація ключа не зачіпає: вони
+не JWT.
+
+### Пара токенів і що лежить у базі
+
+- **access** — JWT ES256, 10 хв, claims `sub`, `role`, `sid` (= `family_id`), `jti`, `iss`, `aud`.
+- **refresh** — 32 випадкові байти (base64url), не JWT, 30 днів. У
+  [`refresh_tokens`](src/migrations/1790000000000-Auth.ts) лежить не він, а
+  `HMAC-SHA256(REFRESH_TOKEN_PEPPER, token)`: дамп таблиці не є дампом чинних сесій, а перець
+  зі сховища робить його марним навіть при витоку самої бази.
+- паролі — `scrypt` з `node:crypto` із сіллю; для неіснуючого email рахується той самий
+  `scrypt` проти фіктивного хешу, щоб час відповіді не видавав, чи є такий користувач.
+
+У логи йде лише `family_id`, `user_id`, `jti` і відбиток ключа — ніколи сам токен чи його хвіст.
+
+### Ротація з детекцією повтору (RFC 9700 §4.14.2)
+
+RFC 9700 §4.14.2 вимагає для публічних клієнтів або sender-constrained refresh-токен, або
+ротацію з детекцією повтору. Тут — друге. Кожен успішний `POST /auth/refresh` позначає
+предʼявлений токен `used_at` і видає наступника в **тій самій сімʼї** (`family_id`) — одним
+`COMMIT`. Звʼязок старого і нового зберігається саме для того, щоб виявлений повтор було чим
+відкликати: якщо прийшов токен з `used_at IS NOT NULL`, хтось тримає застарілу копію — злодій
+або чесний клієнт, і розрізнити їх не можна. Тому вмирає **вся** сімʼя (`revoked_at` на всі її
+рядки), у лог іде `refresh token reuse detected — family revoked family_id=… user_id=…`, і
+обидва мусять логінитись заново. Ротація без сімʼї нічого не дає: злодій рефрешиться першим,
+чесний клієнт мовчки перелогінюється, а сесія злодія живе далі. `r2-after-reuse=401` — рівно
+ця різниця.
+
+`401` кидається **після** транзакції: кинутий усередині, він відкотив би й саме відкликання.
+`SELECT … FOR UPDATE` по хешу серіалізує паралельні рефреші одного токена.
+
+**Гонка на клієнті.** Два паралельні запити фронта, що рефрешать один і той самий токен,
+виглядають рівно як компрометація — другий вбʼє сесію. Обрано **серіалізацію на клієнті**
+(один спільний проміс рефрешу на всі запити), без вікна благодаті на сервері: вікно — це
+навмисна дірка, в яку вміщається й злодій.
+
+Після детекції повтору вже видані access-токени цієї сімʼї живуть до свого `exp` (≤ 10 хв) —
+свідомий компроміс: інакше кожен запит мав би перевіряти ще й стан сімʼї.
+
+### Чому логаут — це дві дії
+
+Два токени — дві різні речі. Refresh — рядок у базі: щоб його вбити, досить
+`revoked_at = now()` на його сімʼю. Access self-contained: сервер нічого про нього не зберігає,
+і він валідний до `exp` за будь-якого стану бази. Зупинити його можна лише денилистом за `jti`.
+Тому `POST /auth/logout` робить обидва: відкликає сімʼю (`sid` з токена) і кладе `jti` у
+`revoked_access_tokens` з `expires_at` = `exp` токена.
+
+Денилист — у тій самій Postgres, що й `refresh_tokens` (Redis у проєкті немає), і обидві дії —
+**одна транзакція**: немає dual write, коли денилист записався в одне сховище, а відкликання не
+дійшло до другого. TTL: запис, старший за `exp`, нічого не охороняє — кожен логаут видаляє
+прострочені рядки, тож таблиця не росте. Ціна — access-токен перестав бути stateless: кожен
+запит робить один `SELECT` по PK денилиста. `after-logout=401` у `demo:auth` — доказ саме цього:
+підпис і `exp` того токена досі в порядку.
+
+### 401 проти 403
+
+- `JwtAuthGuard` (APP_GUARD №1) — немає / протух / зіпсований / невідомий `kid` / у денилисті →
+  **401**. Клієнт на 401 іде рефрешити.
+- `RolesGuard` (APP_GUARD №2, після першого) — токен валідний, роль не та → **403**. Клієнт
+  показує помилку і не рефрешить.
+
+Переплутати — означає або нескінченний цикл рефрешу, або вилогінювання на кожній чужій
+сторінці. `anon=401` + `foreign=403` у `demo:rbac` — розділення двох дисциплін.
+
+### Де проходить межа власності
+
+Власність — це авторизація, якій потрібні дані самого ресурсу, тому вона **не** в гарді: гард
+стоїть до завантаження ресурсу і не знає `user_id`, тож мусив би сам ходити в базу. Для списків
+власність — це `WHERE`: `AccountsRepository.findPage` фільтрує `a.user_id = :userId`, а
+`TransactionsRepository.findPage` — `INNER JOIN accounts … user_id = :userId`, тож чужі рядки
+взагалі не виходять з бази. Для одного ресурсу (`GET /accounts/{id}`, `GET /transactions/{id}`,
+рахунки в батчі `POST /transactions`) сервіс спершу завантажує рядок і лише тоді порівнює
+власника ([`assertOwner`](src/auth/ownership.ts)): немає рядка — `404`, чужий — `403`. У
+`POST /transactions` ця перевірка стоїть усередині тієї ж DB-транзакції, що й запис.
+
+`Idempotency-Key` тепер теж живе в просторі одного користувача: колишній middleware став
+interceptor-ом ([`idempotency.interceptor.ts`](src/shared/idempotency.interceptor.ts)) — він
+виконується після гардів, тож бере вже перевірений `req.user.id` і веде кеш по `user:key`.
+Інакше користувач B з ключем A отримав би replay відповіді A.
+
+### Роль у токені — кеш, а не джерело правди
+
+Джерело правди — `users.role`. Claim `role` — її знімок на момент видачі токена. Свіжо
+розжалуваний `member` (→ `viewer`) **лишається з правом запису до `exp` свого access-токена** —
+до 10 хв. Далі роль наздоганяє сесію: `POST /auth/refresh` читає `role` з `users`, а не копіює зі
+старого токена. Якщо 10 хв — забагато (звільнений бухгалтер), розжалування має супроводжуватись
+відкликанням його refresh-сімей і denylist-ом активних `jti`, або перевірка ролі для запису має
+йти в базу — і тоді ми платимо запитом на кожен запис. Вартість відкликання — це наслідок
+бажаних властивостей безпеки, а не константа (RFC 7009 §3).
+
+### Відбитки ключів dev і prod
+
+Застосунок на старті логує `jwt kid=<kid> key=sha256:<sha256 від DER SPKI публічного ключа>` —
+ключ ніколи, відбиток завжди. Той самий відбиток з кожного оточення сховища:
+
+```bash
+bash scripts/with-secrets.sh dev node -e 'const c=require("node:crypto");const d=c.createPublicKey(Buffer.from(process.env.JWT_PUBLIC_KEY,"base64")).export({type:"spki",format:"der"});console.log(process.env.JWT_KID,"sha256:"+c.createHash("sha256").update(d).digest("hex"))'
+bash scripts/with-secrets.sh prod node -e '…той самий рядок…'
+```
+
+| Оточення | `JWT_KID` | Відбиток публічного ключа |
+|---|---|---|
+| dev | `TODO` | `sha256:TODO` |
+| prod | `TODO` | `sha256:TODO` |
+
+Відбитки різні — отже й пари різні: токен, підписаний dev-ключем, prod не прийме.
+
+Нова пара для оточення генерується так і кладеться в сховище (приватний ключ не лишається ні в
+файлі, ні в історії шелу — тільки в пайпі):
+
+```bash
+node -e 'const k=require("node:crypto").generateKeyPairSync("ec",{namedCurve:"P-256",privateKeyEncoding:{type:"pkcs8",format:"pem"},publicKeyEncoding:{type:"spki",format:"pem"}});console.log("JWT_PRIVATE_KEY="+Buffer.from(k.privateKey).toString("base64"));console.log("JWT_PUBLIC_KEY="+Buffer.from(k.publicKey).toString("base64"))' \
+  | xargs infisical secrets set --env=dev JWT_KID=dev-2026-10
+```
+
+## Структура ДЗ #24
+
+| Файл | Що там |
+|---|---|
+| [`src/migrations/1790000000000-Auth.ts`](src/migrations/1790000000000-Auth.ts) | `users.password_hash`, `users.role`, `refresh_tokens` (+ unique-індекс по `token_hash`, індекс по `family_id`), `revoked_access_tokens` |
+| [`src/auth/auth.service.ts`](src/auth/auth.service.ts) | логін, ротація з детекцією повтору, логаут однією транзакцією |
+| [`src/auth/jwt.strategy.ts`](src/auth/jwt.strategy.ts) | `passport-jwt`: allowlist ES256, вибір ключа за `kid`, денилист |
+| [`src/auth/local.strategy.ts`](src/auth/local.strategy.ts) | `passport-local`: email + пароль |
+| [`src/auth/guards.ts`](src/auth/guards.ts) | `JwtAuthGuard` (401), `RolesGuard` (403), `LocalAuthGuard` |
+| [`src/auth/ownership.ts`](src/auth/ownership.ts) | `assertOwner` — 403 для чужого ресурсу після завантаження |
+| [`src/demo-auth.ts`](src/demo-auth.ts), [`src/demo-reuse.ts`](src/demo-reuse.ts), [`src/demo-rbac.ts`](src/demo-rbac.ts) | три демо; спільна обвʼязка — [`src/demo-auth-kit.ts`](src/demo-auth-kit.ts) |
+| [`openapi/openapi.yaml`](openapi/openapi.yaml) | `/auth/*`, `bearerAuth`, `401`/`403` на захищених операціях |

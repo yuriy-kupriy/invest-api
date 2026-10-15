@@ -11,6 +11,8 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { Response } from 'express';
+import { AuthUser } from '@/auth/auth.types';
+import { CurrentUser, Roles } from '@/auth/decorators';
 import { Account, AccountPage } from '@/domain/account';
 import { AccountPageDto, AccountDto } from '@/accounts/dto/account.dto';
 import { i18n } from '@/i18n/swagger';
@@ -35,11 +37,12 @@ export class AccountsController {
   @ApiOkResponse({ type: AccountPageDto })
   @ApiBadRequestResponse(problemResponse(i18n('accounts.list.badRequest')))
   @ApiInternalServerErrorResponse(problemResponse(i18n('errors.internal')))
-  list(@Query() query: PageQueryDto): Promise<AccountPage> {
-    return this.accountsService.list(query.limit, query.cursor);
+  list(@Query() query: PageQueryDto, @CurrentUser() user: AuthUser): Promise<AccountPage> {
+    return this.accountsService.list(user, query.limit, query.cursor);
   }
 
   @Post()
+  @Roles('member')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: i18n('accounts.create.summary') })
   @ApiCreatedResponse({
@@ -56,8 +59,9 @@ export class AccountsController {
   async create(
     @Body() body: CreateAccountDto,
     @Res({ passthrough: true }) res: Response,
+    @CurrentUser() user: AuthUser,
   ): Promise<Account> {
-    const account = await this.accountsService.create(body);
+    const account = await this.accountsService.create(body, user);
     res.location(`/accounts/${account.id}`);
     return account;
   }
@@ -69,7 +73,7 @@ export class AccountsController {
   @ApiBadRequestResponse(problemResponse(i18n('accounts.get.badRequest')))
   @ApiNotFoundResponse(problemResponse(i18n('accounts.get.notFound')))
   @ApiInternalServerErrorResponse(problemResponse(i18n('errors.internal')))
-  get(@Param() params: AccountIdParamDto): Promise<Account> {
-    return this.accountsService.getById(params.account_id);
+  get(@Param() params: AccountIdParamDto, @CurrentUser() user: AuthUser): Promise<Account> {
+    return this.accountsService.getById(params.account_id, user);
   }
 }

@@ -17,6 +17,7 @@ import { FxRateCurrencyParamDto } from './dto/fx-rate-currency-param.dto';
 import { FxRateDto } from './dto/fx-rate.dto';
 import { FxRateQueryDto } from './dto/fx-rate-query.dto';
 import { EffectiveFxRate, FxRatesService } from './fx-rates.service';
+import { Public } from '@/auth/decorators';
 
 /** A closed day's rate only ever changes if a provider publishes a correction. */
 const PAST_DAY_MAX_AGE_SECONDS = 24 * 60 * 60;
@@ -44,6 +45,7 @@ function cacheControlFor(on: Date): string {
 
 @ApiTags('fx-rates')
 @ApiExtraModels(ProblemDto)
+@Public()
 @Controller('fx-rates')
 export class FxRatesController {
   constructor(private readonly fxRatesService: FxRatesService) {}

@@ -1,9 +1,11 @@
+import { randomUUID } from 'node:crypto';
 import { execSync } from 'node:child_process';
 import { AddressInfo } from 'node:net';
 import { resolve } from 'node:path';
 import { INestApplication } from '@nestjs/common';
 import { Verifier, VerifierOptions } from '@pact-foundation/pact';
 import { DataSource } from 'typeorm';
+import { TokensService } from '@/auth/tokens.service';
 import { createApp } from '@/create-app';
 import { connect, resetDb } from '../testkit/db';
 
@@ -47,6 +49,7 @@ describe('invest-api provider verification', () => {
   let app: INestApplication;
   let ds: DataSource;
   let port: number;
+  let token: string;
 
   beforeAll(async () => {
     ds = await connect();
@@ -56,6 +59,12 @@ describe('invest-api provider verification', () => {
     app = await createApp({ logger: false });
     await app.listen(0);
     port = (app.getHttpServer().address() as AddressInfo).port;
+    // The contract describes the response, not auth: the consumer's real client
+    // sends the owner's token, so the verifier does the same for user1, who owns
+    // the fixture account. Signed by the app's own TokensService, nothing faked.
+    token = await app
+      .get(TokensService)
+      .signAccess('00000001-0000-4000-8000-000000000001', 'member', randomUUID());
   });
 
   afterAll(async () => {
@@ -73,6 +82,10 @@ describe('invest-api provider verification', () => {
       providerBaseUrl: `http://127.0.0.1:${port}`,
       providerVersion: providerVersion(),
       ...contractSource(),
+      requestFilter: (req, _res, next) => {
+        req.headers.authorization = `Bearer ${token}`;
+        next();
+      },
       stateHandlers: {
         // Idempotent on purpose: the verifier may replay a state any number of
         // times in one run, and re-seeding must not fail on the second pass.

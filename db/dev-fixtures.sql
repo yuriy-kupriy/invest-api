@@ -18,9 +18,9 @@ INSERT INTO currency (code, numeric_code, exponent, name) VALUES
   ('USD', 840, 2, 'United States dollar')
 ON CONFLICT (code) DO NOTHING;
 
--- Fixed system user accounts attach to — the HW #9 domain type has no concept
--- of account ownership, so every account created through the API attaches
--- here too (see src/accounts/typeorm-accounts.repository.ts).
+-- Owner of the fixture accounts below. Since HW #24 an account belongs to the
+-- user whose access token created it; this user has no password (password_hash
+-- is NULL) and cannot log in until one is set — the e2e suite sets one.
 INSERT INTO users (id, email, display_name) VALUES
   ('00000001-0000-4000-8000-000000000001', 'user1@example.com', 'Olena Koval')
 ON CONFLICT (id) DO NOTHING;

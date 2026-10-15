@@ -1,11 +1,23 @@
 import 'reflect-metadata';
 import './register-aliases';
-import { ConfigService } from '@nestjs/config';
-import { Env } from '@/config/env.schema';
-import { createApp } from '@/create-app';
-import { setupSwagger } from '@/shared/swagger';
+import { existsSync } from 'node:fs';
+import type { Env } from '@/config/env.schema';
+import { validateEnv } from '@/config/env.validation';
 
 async function bootstrap(): Promise<void> {
+  // Config is validated before anything else is even loaded: src/data-source.ts
+  // resolves its connection at import time and would otherwise die first,
+  // naming only the database variable instead of every missing secret.
+  // process.env wins over .env, exactly as in ConfigModule.
+  if (existsSync('.env')) {
+    process.loadEnvFile('.env');
+  }
+  validateEnv(process.env);
+
+  const { ConfigService } = await import('@nestjs/config');
+  const { createApp } = await import('@/create-app');
+  const { setupSwagger } = await import('@/shared/swagger');
+
   const app = await createApp();
   const config = app.get(ConfigService<Env, true>);
 

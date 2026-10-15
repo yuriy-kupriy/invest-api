@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { HttpStatus } from '@nestjs/common';
-import { Account } from '@/domain/account';
+import { AuthUser } from '@/auth/auth.types';
+import { Account, OwnedAccount } from '@/domain/account';
 import { Currency } from '@/domain/currency';
 import { encodeCursor } from '@/shared/pagination';
 import { ProblemException } from '@/shared/problem.exception';
@@ -25,6 +26,17 @@ const brokerageAccount: Account = {
   created_at: '2026-02-01T09:00:00.000Z',
 };
 
+const owner: AuthUser = {
+  id: '00000001-0000-4000-8000-000000000001',
+  role: 'member',
+  jti: '00000009-0000-4000-8000-000000000001',
+  sid: '00000009-0000-4000-8000-000000000002',
+  exp: 0,
+};
+const stranger: AuthUser = { ...owner, id: '00000001-0000-4000-8000-000000000002' };
+
+const owned = (account: Account): OwnedAccount => ({ ...account, user_id: owner.id });
+
 describe('AccountsService', () => {
   let service: AccountsService;
   let accountsRepo: jest.Mocked<AccountsRepository>;
@@ -40,7 +52,6 @@ describe('AccountsService', () => {
             findPage: jest.fn(),
             save: jest.fn((account: Account) => Promise.resolve(account)),
             updateBalance: jest.fn(),
-            has: jest.fn(),
           },
         },
       ],
@@ -59,19 +70,19 @@ describe('AccountsService', () => {
     // so what's left to test here is the page contract: pass the limit down, and
     // issue a cursor only when the page came back full.
     it('issues a next_cursor when the page is full', async () => {
-      accountsRepo.findPage.mockResolvedValue([brokerageAccount]);
+      accountsRepo.findPage.mockResolvedValue([owned(brokerageAccount)]);
 
-      const page = await service.list(1);
+      const page = await service.list(owner, 1);
 
-      expect(accountsRepo.findPage).toHaveBeenCalledWith(1, undefined);
+      expect(accountsRepo.findPage).toHaveBeenCalledWith(owner.id, 1, undefined);
       expect(page.items).toEqual([brokerageAccount]);
       expect(page.next_cursor).toEqual(expect.any(String));
     });
 
     it('reports no next page when fewer rows than the limit come back', async () => {
-      accountsRepo.findPage.mockResolvedValue([cashAccount, brokerageAccount]);
+      accountsRepo.findPage.mockResolvedValue([owned(cashAccount), owned(brokerageAccount)]);
 
-      const page = await service.list(20);
+      const page = await service.list(owner, 20);
 
       expect(page.items).toHaveLength(2);
       expect(page.next_cursor).toBeNull();
@@ -81,9 +92,9 @@ describe('AccountsService', () => {
       accountsRepo.findPage.mockResolvedValue([]);
       const cursor = encodeCursor(cashAccount.created_at, cashAccount.id);
 
-      await service.list(20, cursor);
+      await service.list(owner, 20, cursor);
 
-      expect(accountsRepo.findPage).toHaveBeenCalledWith(20, {
+      expect(accountsRepo.findPage).toHaveBeenCalledWith(owner.id, 20, {
         c: cashAccount.created_at,
         id: cashAccount.id,
       });
@@ -97,9 +108,9 @@ describe('AccountsService', () => {
         type: 'cash',
         currency: Currency.EUR,
         opening_balance_cents: 5000,
-      });
+      }, owner);
 
-      expect(accountsRepo.save).toHaveBeenCalledTimes(1);
+      expect(accountsRepo.save).toHaveBeenCalledWith(expect.any(Object), owner.id);
       expect(created).toMatchObject({
         name: 'EUR cash',
         type: 'cash',
@@ -112,16 +123,24 @@ describe('AccountsService', () => {
 
   describe('getById', () => {
     it('returns the account when it exists', async () => {
-      accountsRepo.findById.mockResolvedValue(cashAccount);
+      accountsRepo.findById.mockResolvedValue(owned(cashAccount));
 
-      expect(await service.getById(cashAccount.id)).toEqual(cashAccount);
+      expect(await service.getById(cashAccount.id, owner)).toEqual(cashAccount);
+    });
+
+    it('answers 403, not 404, for an account that exists but belongs to someone else', async () => {
+      accountsRepo.findById.mockResolvedValue(owned(cashAccount));
+
+      await expect(service.getById(cashAccount.id, stranger)).rejects.toMatchObject({
+        status: HttpStatus.FORBIDDEN,
+      });
     });
 
     it('throws ProblemException when the account is missing', async () => {
       accountsRepo.findById.mockResolvedValue(undefined);
 
       try {
-        await service.getById('00000000-0000-4000-8000-000000000000');
+        await service.getById('00000000-0000-4000-8000-000000000000', owner);
         throw new Error('expected ProblemException');
       } catch (err) {
         expect(err).toBeInstanceOf(ProblemException);

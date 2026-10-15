@@ -3,15 +3,26 @@ import { HttpStatus } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { getDataSourceToken } from '@nestjs/typeorm';
 import { AccountsRepository } from '@/accounts/accounts.repository';
-import { Account } from '@/domain/account';
+import { AuthUser } from '@/auth/auth.types';
+import { OwnedAccount } from '@/domain/account';
 import { Currency } from '@/domain/currency';
 import { Transaction } from '@/domain/transaction';
 import { ProblemException } from '@/shared/problem.exception';
 import { TransactionsRepository } from './transactions.repository';
 import { TransactionsService } from './transactions.service';
 
-const cashAccount: Account = {
+const owner: AuthUser = {
+  id: '00000001-0000-4000-8000-000000000001',
+  role: 'member',
+  jti: '00000009-0000-4000-8000-000000000001',
+  sid: '00000009-0000-4000-8000-000000000002',
+  exp: 0,
+};
+const stranger: AuthUser = { ...owner, id: '00000001-0000-4000-8000-000000000002' };
+
+const cashAccount: OwnedAccount = {
   id: '11111111-1111-4111-8111-111111111111',
+  user_id: owner.id,
   name: 'Cash UAH',
   type: 'cash',
   currency: Currency.UAH,
@@ -52,11 +63,11 @@ describe('TransactionsService', () => {
         {
           provide: AccountsRepository,
           useValue: {
+            findById: jest.fn(),
             findByIds: jest.fn(),
             findPage: jest.fn(),
             save: jest.fn(),
             updateBalance: jest.fn(),
-            has: jest.fn(),
           },
         },
         {
@@ -87,31 +98,39 @@ describe('TransactionsService', () => {
 
   describe('list', () => {
     it('throws when account_id filter points to a missing account', async () => {
-      accountsRepo.has.mockResolvedValue(false);
+      accountsRepo.findById.mockResolvedValue(undefined);
 
-      await expect(service.list(20, undefined, cashAccount.id)).rejects.toThrow(ProblemException);
+      await expect(service.list(owner, 20, undefined, cashAccount.id)).rejects.toThrow(ProblemException);
+    });
+
+    it('answers 403 when account_id filter points to someone else\'s account', async () => {
+      accountsRepo.findById.mockResolvedValue(cashAccount);
+
+      await expect(service.list(stranger, 20, undefined, cashAccount.id)).rejects.toMatchObject({
+        status: HttpStatus.FORBIDDEN,
+      });
+      expect(transactionsRepo.findPage).not.toHaveBeenCalled();
     });
 
     // The account_id filter, the ordering and the cursor are now part of the
     // SQL query (TransactionsRepository.findPage); the service's remaining job
     // is to pass them down and to decide whether a next_cursor is due.
     it('pushes the account_id filter down to the repository', async () => {
-      accountsRepo.has.mockResolvedValue(true);
+      accountsRepo.findById.mockResolvedValue(cashAccount);
       transactionsRepo.findPage.mockResolvedValue([expense]);
 
-      const page = await service.list(20, undefined, cashAccount.id);
+      const page = await service.list(owner, 20, undefined, cashAccount.id);
 
-      expect(transactionsRepo.findPage).toHaveBeenCalledWith(20, undefined, cashAccount.id);
+      expect(transactionsRepo.findPage).toHaveBeenCalledWith(owner.id, 20, undefined, cashAccount.id);
       expect(page.items).toHaveLength(1);
       expect(page.items[0].id).toBe(expense.id);
       expect(page.next_cursor).toBeNull();
     });
 
     it('issues a next_cursor when the page comes back full', async () => {
-      accountsRepo.has.mockResolvedValue(true);
       transactionsRepo.findPage.mockResolvedValue([expense]);
 
-      const page = await service.list(1);
+      const page = await service.list(owner, 1);
 
       expect(page.next_cursor).toEqual(expect.any(String));
     });
@@ -132,7 +151,7 @@ describe('TransactionsService', () => {
             description: 'Lunch',
           },
         ],
-      });
+      }, owner);
 
       expect(result.transactions).toHaveLength(1);
       expect(result.transactions[0]).toMatchObject({
@@ -169,7 +188,7 @@ describe('TransactionsService', () => {
               booked_at: '2026-08-25T10:00:00.000Z',
             },
           ],
-        }),
+        }, owner),
       ).rejects.toThrow(ProblemException);
 
       expect(transactionsRepo.saveMany).not.toHaveBeenCalled();
@@ -190,7 +209,7 @@ describe('TransactionsService', () => {
               booked_at: '2026-08-25T10:00:00.000Z',
             },
           ],
-        });
+        }, owner);
         throw new Error('expected ProblemException');
       } catch (err) {
         expect(err).toBeInstanceOf(ProblemException);
@@ -200,11 +219,45 @@ describe('TransactionsService', () => {
     });
   });
 
+  describe('ownership', () => {
+    it('refuses with 403 and writes nothing when an entry targets someone else\'s account', async () => {
+      accountsRepo.findByIds.mockResolvedValue([cashAccount]);
+
+      await expect(
+        service.create(
+          {
+            entries: [
+              {
+                account_id: cashAccount.id,
+                type: 'expense',
+                amount_cents: 1,
+                currency: Currency.UAH,
+                booked_at: '2026-08-25T10:00:00.000Z',
+              },
+            ],
+          },
+          stranger,
+        ),
+      ).rejects.toMatchObject({ status: HttpStatus.FORBIDDEN });
+      expect(transactionsRepo.saveMany).not.toHaveBeenCalled();
+    });
+
+    it('answers 403 for a transaction on someone else\'s account', async () => {
+      transactionsRepo.findById.mockResolvedValue(expense);
+      accountsRepo.findById.mockResolvedValue(cashAccount);
+
+      await expect(service.getById(expense.id, stranger)).rejects.toMatchObject({
+        status: HttpStatus.FORBIDDEN,
+      });
+    });
+  });
+
   describe('getById', () => {
     it('returns the transaction when it exists', async () => {
       transactionsRepo.findById.mockResolvedValue(expense);
+      accountsRepo.findById.mockResolvedValue(cashAccount);
 
-      expect(await service.getById(expense.id)).toMatchObject({
+      expect(await service.getById(expense.id, owner)).toMatchObject({
         id: expense.id,
         amount_cents: expense.amount_cents,
       });
@@ -214,7 +267,7 @@ describe('TransactionsService', () => {
       transactionsRepo.findById.mockResolvedValue(undefined);
 
       try {
-        await service.getById('aaaaaaaa-0000-4000-8000-000000000099');
+        await service.getById('aaaaaaaa-0000-4000-8000-000000000099', owner);
         throw new Error('expected ProblemException');
       } catch (err) {
         expect(err).toBeInstanceOf(ProblemException);

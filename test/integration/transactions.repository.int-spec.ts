@@ -72,7 +72,7 @@ describe('TransactionsRepository (integration)', () => {
     });
     expect(await repo.findById(expense.id)).toMatchObject({ instrument_symbol: null });
 
-    const page = await repo.findPage(10, undefined, BROKERAGE_ACCOUNT_ID);
+    const page = await repo.findPage('00000001-0000-4000-8000-000000000001', 10, undefined, BROKERAGE_ACCOUNT_ID);
     expect(page.map((t) => t.id)).toContain(buy.id);
     expect(page.map((t) => t.id)).not.toContain(expense.id);
   });

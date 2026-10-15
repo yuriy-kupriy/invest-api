@@ -30,11 +30,15 @@ servers:
   - url: http://localhost:3000
     description: Local app with runtime validation against this spec
 
-# Auth is intentionally absent until homework #24 (JWT + RBAC).
-# An explicit empty list satisfies the redocly security-defined rule.
-security: []
+# Homework #24: every operation needs a Bearer access token (ES256 JWT) unless
+# it overrides this with `security: []`. 401 = no/expired/invalid token,
+# 403 = valid token, but not allowed (wrong role or someone else's resource).
+security:
+  - bearerAuth: []
 
 tags:
+  - name: auth
+    description: Auth — login, refresh-token rotation, logout
   - name: accounts
     description: Accounts — cash, bank, brokerage, property
   - name: transactions
@@ -47,6 +51,84 @@ tags:
     description: Currencies — the ISO 4217 lookup table accounts, transactions, and fx-rates read from
 
 paths:
+  /auth/login:
+    post:
+      operationId: login
+      summary: Log in
+      description: >
+        Exchanges email and password for a token pair and starts a new refresh-token
+        family. `access_token` is an ES256 JWT that lives `expires_in` seconds;
+        `refresh_token` is opaque and single-use.
+      tags: [auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Token pair
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /auth/refresh:
+    post:
+      operationId: refreshTokens
+      summary: Rotate the refresh token
+      description: >
+        Spends the refresh token and returns a new pair in the same family. A refresh
+        token presented a second time is treated as stolen: the whole family is
+        revoked and every token in it — including the newest one — stops working.
+        Clients must serialise refreshes: two parallel refreshes of one token look
+        exactly like a replay.
+      tags: [auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: New token pair
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /auth/logout:
+    post:
+      operationId: logout
+      summary: Log out
+      description: >
+        Revokes the refresh-token family of this session and denylists the presented
+        access token until its `exp`. Both happen in one database transaction.
+      tags: [auth]
+      responses:
+        '204':
+          description: Logged out
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /accounts:
     get:
       operationId: listAccounts
@@ -84,6 +166,8 @@ paths:
                 $ref: '#/components/schemas/AccountPage'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -115,6 +199,10 @@ paths:
                 $ref: '#/components/schemas/Account'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -142,6 +230,10 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -193,6 +285,10 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -251,6 +347,10 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Unprocessable'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -278,12 +378,17 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '500':
           $ref: '#/components/responses/InternalError'
 
   /fx-rates/{currency}/latest:
     get:
       operationId: getLatestFxRate
+      security: []
       summary: Get latest fx rate
       description: >
         Resolves the fx rate that would be used to snapshot a transaction booked
@@ -340,6 +445,7 @@ paths:
   /currencies:
     get:
       operationId: listCurrencies
+      security: []
       summary: List currencies
       description: >
         Every row of the `currency` lookup table — the reference data behind
@@ -368,6 +474,7 @@ paths:
   /currencies/{code}:
     get:
       operationId: getCurrency
+      security: []
       summary: Get currency
       description: >
         Looks the code up in the `currency` table directly rather than
@@ -406,6 +513,7 @@ paths:
   /health:
     get:
       operationId: livenessProbe
+      security: []
       summary: Liveness probe
       description: >
         Answers one question: did this process restart? `uptime_seconds` is the
@@ -425,6 +533,7 @@ paths:
   /health/db:
     get:
       operationId: databaseReadinessProbe
+      security: []
       summary: Database readiness probe
       description: >
         A real round trip to Postgres. The pool reads the password from the secret
@@ -444,7 +553,28 @@ paths:
           $ref: '#/components/responses/InternalError'
 
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: ES256-signed access token from `POST /auth/login` or `POST /auth/refresh`.
+
   responses:
+    Unauthorized:
+      description: No access token, or it is expired, tampered with, signed by an unknown key or revoked
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+    Forbidden:
+      description: The token is valid, but this user may not do this — wrong role or someone else's resource
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
     BadRequest:
       description: The request failed validation against this spec
       content:
@@ -488,6 +618,50 @@ components:
             $ref: '#/components/schemas/Problem'
 
   schemas:
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          minLength: 3
+          maxLength: 254
+          example: demo-owner@example.com
+        password:
+          type: string
+          minLength: 1
+          maxLength: 256
+
+    RefreshRequest:
+      type: object
+      additionalProperties: false
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+          minLength: 1
+          maxLength: 512
+
+    TokenPair:
+      type: object
+      additionalProperties: false
+      required: [access_token, refresh_token, token_type, expires_in]
+      properties:
+        access_token:
+          type: string
+          description: ES256 JWT with `sub`, `role`, `sid` (refresh family), `jti`, `exp`.
+        refresh_token:
+          type: string
+          description: Opaque, single-use. Only its HMAC is stored server-side.
+        token_type:
+          type: string
+          enum: [Bearer]
+        expires_in:
+          type: integer
+          description: Access token lifetime in seconds.
+          example: 600
+
     Health:
       type: object
       description: Liveness of the process itself, with no dependency checked.

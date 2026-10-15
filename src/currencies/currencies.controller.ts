@@ -15,11 +15,13 @@ import { problemResponse } from '@/shared/openapi';
 import { CurrenciesService } from './currencies.service';
 import { CurrencyCodeParamDto } from './dto/currency-code-param.dto';
 import { CurrencyDto } from './dto/currency.dto';
+import { Public } from '@/auth/decorators';
 
 const CACHE_CONTROL = 'public, max-age=3600';
 
 @ApiTags('currencies')
 @ApiExtraModels(ProblemDto)
+@Public()
 @Controller('currencies')
 export class CurrenciesController {
   constructor(private readonly currenciesService: CurrenciesService) {}
