@@ -1,4 +1,5 @@
 import { DataSource, EntityManager } from 'typeorm';
+import { orderPlaced, OrderPlacedEvent } from '../broker/order-placed.event';
 
 /**
  * The domain's checkout: buy `quantity` units of an instrument out of an
@@ -33,6 +34,7 @@ export interface CheckoutSuccess {
   /** Balance after the debit, straight from the guarded UPDATE's RETURNING. */
   balanceCents: number;
   costCents: number;
+  currency: string;
 }
 
 export interface CheckoutFailure {
@@ -118,9 +120,17 @@ async function resolveFxRate(manager: EntityManager, currency: string): Promise<
   return rows[0].rate;
 }
 
+/**
+ * `publish` (HW #19) receives order.placed only after COMMIT, so no consumer
+ * ever hears about an order that was rolled back. The opposite gap stays open:
+ * a crash between COMMIT and publish loses the event — closing it needs a
+ * transactional outbox (HW #22), because there is no shared COMMIT between
+ * Postgres and the broker.
+ */
 export async function checkout(
   dataSource: DataSource,
   request: CheckoutRequest,
+  publish?: (event: OrderPlacedEvent) => Promise<void>,
 ): Promise<CheckoutResult> {
   const { accountId, instrumentId, quantity, unitPriceCents } = request;
 
@@ -130,10 +140,11 @@ export async function checkout(
 
   const costCents = unitPriceCents * quantity;
 
+  let result: CheckoutSuccess;
   try {
     // One callback, one connection from the pool, one BEGIN…COMMIT. All four
     // statements below run on `manager`, so they share that single client.
-    return await dataSource.transaction(async (manager): Promise<CheckoutSuccess> => {
+    result = await dataSource.transaction(async (manager): Promise<CheckoutSuccess> => {
       const debited = await debitAccount(manager, accountId, costCents);
       const fxRate = await resolveFxRate(manager, debited.currency);
 
@@ -168,6 +179,7 @@ export async function checkout(
         jobId: jobRows[0].id,
         balanceCents: Number(debited.balance_cents),
         costCents,
+        currency: debited.currency,
       };
     });
   } catch (error) {
@@ -177,4 +189,16 @@ export async function checkout(
 
     throw error;
   }
+
+  await publish?.(
+    orderPlaced({
+      orderId: result.orderId,
+      accountId,
+      instrumentId,
+      quantity,
+      costCents,
+      currency: result.currency,
+    }),
+  );
+  return result;
 }
