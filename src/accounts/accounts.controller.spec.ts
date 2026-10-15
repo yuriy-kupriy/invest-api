@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { AuthUser } from '@/auth/auth.types';
 import { Account } from '@/domain/account';
 import { Currency } from '@/domain/currency';
 import { AccountsController } from './accounts.controller';
@@ -12,6 +13,8 @@ const cashAccount: Account = {
   balance_cents: 350000,
   created_at: '2026-01-10T09:00:00.000Z',
 };
+
+const user = { id: '00000001-0000-4000-8000-000000000001', role: 'member' } as AuthUser;
 
 describe('AccountsController', () => {
   let controller: AccountsController;
@@ -44,8 +47,8 @@ describe('AccountsController', () => {
     const page = { items: [cashAccount], next_cursor: null };
     accountsService.list.mockResolvedValue(page);
 
-    expect(await controller.list({ limit: 2, cursor: 'abc' })).toBe(page);
-    expect(accountsService.list).toHaveBeenCalledWith(2, 'abc');
+    expect(await controller.list({ limit: 2, cursor: 'abc' }, user)).toBe(page);
+    expect(accountsService.list).toHaveBeenCalledWith(user, 2, 'abc');
   });
 
   it('create sets Location and returns the account', async () => {
@@ -60,6 +63,7 @@ describe('AccountsController', () => {
         opening_balance_cents: 0,
       },
       res as never,
+      user,
     );
 
     expect(result).toBe(cashAccount);
@@ -69,7 +73,7 @@ describe('AccountsController', () => {
   it('get passes account_id to the service', async () => {
     accountsService.getById.mockResolvedValue(cashAccount);
 
-    expect(await controller.get({ account_id: cashAccount.id })).toBe(cashAccount);
-    expect(accountsService.getById).toHaveBeenCalledWith(cashAccount.id);
+    expect(await controller.get({ account_id: cashAccount.id }, user)).toBe(cashAccount);
+    expect(accountsService.getById).toHaveBeenCalledWith(cashAccount.id, user);
   });
 });

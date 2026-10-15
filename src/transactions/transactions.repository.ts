@@ -51,15 +51,22 @@ export class TransactionsRepository {
   }
 
   /**
-   * Keyset page ordered by (booked_at DESC, id DESC), optionally narrowed to
-   * one account. The row-value comparison is exactly the shape
+   * Keyset page of one user's transactions ordered by (booked_at DESC, id DESC),
+   * optionally narrowed to one account. The row-value comparison is exactly the shape
    * `transactions_account_booked_idx (account_id, booked_at DESC, id DESC)`
    * was built for, so this is an index scan rather than a full read.
    */
-  async findPage(limit: number, cursor?: CursorPayload, accountId?: string): Promise<Transaction[]> {
+  async findPage(
+    userId: string,
+    limit: number,
+    cursor?: CursorPayload,
+    accountId?: string,
+  ): Promise<Transaction[]> {
     const qb = this.repo
       .createQueryBuilder('t')
       .leftJoinAndSelect('t.instrument', 'instrument')
+      // Ownership as a WHERE: only rows on this user's accounts are ever read.
+      .innerJoin('t.account', 'owner', 'owner.userId = :userId', { userId })
       .orderBy('t.bookedAt', 'DESC')
       .addOrderBy('t.id', 'DESC')
       .take(limit);

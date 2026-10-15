@@ -1,5 +1,7 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import { AuthUser } from '@/auth/auth.types';
+import { assertOwner } from '@/auth/ownership';
 import { Account, AccountPage } from '@/domain/account';
 import { toAccount } from '@/shared/mappers';
 import { decodeCursor, encodeCursor } from '@/shared/pagination';
@@ -11,8 +13,8 @@ import { CreateAccountDto } from './dto/create-account.dto';
 export class AccountsService {
   constructor(private readonly accountsRepo: AccountsRepository) {}
 
-  async list(limit: number, cursor?: string): Promise<AccountPage> {
-    const rows = await this.accountsRepo.findPage(limit, cursor ? decodeCursor(cursor) : undefined);
+  async list(user: AuthUser, limit: number, cursor?: string): Promise<AccountPage> {
+    const rows = await this.accountsRepo.findPage(user.id, limit, cursor ? decodeCursor(cursor) : undefined);
     const last = rows[rows.length - 1];
     return {
       items: rows.map(toAccount),
@@ -20,7 +22,7 @@ export class AccountsService {
     };
   }
 
-  async create(input: CreateAccountDto): Promise<Account> {
+  async create(input: CreateAccountDto, user: AuthUser): Promise<Account> {
     const account: Account = {
       id: randomUUID(),
       name: input.name,
@@ -29,15 +31,17 @@ export class AccountsService {
       balance_cents: input.opening_balance_cents,
       created_at: new Date().toISOString(),
     };
-    await this.accountsRepo.save(account);
+    await this.accountsRepo.save(account, user.id);
     return toAccount(account);
   }
 
-  async getById(accountId: string): Promise<Account> {
+  /** Loaded first, then compared: 404 for no such row, 403 for someone else's. */
+  async getById(accountId: string, user: AuthUser): Promise<Account> {
     const account = await this.accountsRepo.findById(accountId);
     if (!account) {
       throw problem(HttpStatus.NOT_FOUND, 'account-not-found', `account ${accountId} was not found`);
     }
+    assertOwner(account.user_id, user, `account ${accountId}`);
     return toAccount(account);
   }
 }

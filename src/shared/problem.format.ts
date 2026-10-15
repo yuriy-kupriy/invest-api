@@ -6,6 +6,8 @@ const PROBLEM_BASE = 'https://api.invest.example/problems';
 
 const TITLES: Record<number, string> = {
   [HttpStatus.BAD_REQUEST]: 'Bad request',
+  [HttpStatus.UNAUTHORIZED]: 'Authentication required',
+  [HttpStatus.FORBIDDEN]: 'Not allowed',
   [HttpStatus.NOT_FOUND]: 'Resource not found',
   [HttpStatus.CONFLICT]: 'Conflict with resource state',
   [HttpStatus.UNPROCESSABLE_ENTITY]: 'The request body failed validation',

@@ -13,6 +13,11 @@ export interface Account {
   created_at: string;
 }
 
+/** An account as the repository loads it: with its owner, which never goes on the wire. */
+export interface OwnedAccount extends Account {
+  user_id: string;
+}
+
 export interface AccountPage {
   items: Account[];
   next_cursor: string | null;

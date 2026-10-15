@@ -26,6 +26,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<INestAp
       apiSpec: join(__dirname, '..', 'openapi', 'openapi.yaml'),
       validateRequests: true,
       validateResponses: true,
+      // The spec documents bearerAuth, but JwtAuthGuard is the one authority on
+      // tokens: two checkers would answer 401 with two different bodies.
+      validateSecurity: false,
       ignorePaths: /^\/docs/,
     }),
   );

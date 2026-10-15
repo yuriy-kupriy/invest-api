@@ -1,13 +1,14 @@
-import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { APP_FILTER } from '@nestjs/core';
+import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
 import { AccountsModule } from '@/accounts/accounts.module';
+import { AuthModule } from '@/auth/auth.module';
 import { validateEnv } from '@/config/env.validation';
 import { CurrenciesModule } from '@/currencies/currencies.module';
 import { DbModule } from '@/db/db.module';
 import { FxRatesModule } from '@/fx-rates/fx-rates.module';
 import { HealthModule } from '@/health/health.module';
-import { IdempotencyMiddleware } from '@/shared/idempotency.middleware';
+import { IdempotencyInterceptor } from '@/shared/idempotency.interceptor';
 import { ProblemExceptionFilter } from '@/shared/problem.filter';
 import { TransactionsModule } from '@/transactions/transactions.module';
 
@@ -22,6 +23,7 @@ import { TransactionsModule } from '@/transactions/transactions.module';
       validate: validateEnv,
     }),
     DbModule,
+    AuthModule,
     HealthModule,
     AccountsModule,
     CurrenciesModule,
@@ -33,10 +35,10 @@ import { TransactionsModule } from '@/transactions/transactions.module';
       provide: APP_FILTER,
       useClass: ProblemExceptionFilter,
     },
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: IdempotencyInterceptor,
+    },
   ],
 })
-export class AppModule implements NestModule {
-  configure(consumer: MiddlewareConsumer): void {
-    consumer.apply(IdempotencyMiddleware).forRoutes('*');
-  }
-}
+export class AppModule {}

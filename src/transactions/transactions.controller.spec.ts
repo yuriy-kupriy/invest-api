@@ -1,9 +1,12 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { AuthUser } from '@/auth/auth.types';
 import { Currency } from '@/domain/currency';
 import { Transaction } from '@/domain/transaction';
 import { CreateTransactionsDto } from './dto/create-transactions.dto';
 import { TransactionsController } from './transactions.controller';
 import { TransactionsService } from './transactions.service';
+
+const user = { id: '00000001-0000-4000-8000-000000000001', role: 'member' } as AuthUser;
 
 const expense: Transaction = {
   id: 'aaaaaaaa-0000-4000-8000-000000000001',
@@ -54,9 +57,9 @@ describe('TransactionsController', () => {
         limit: 10,
         cursor: 'tok',
         account_id: expense.account_id,
-      }),
+      }, user),
     ).toBe(page);
-    expect(transactionsService.list).toHaveBeenCalledWith(10, 'tok', expense.account_id);
+    expect(transactionsService.list).toHaveBeenCalledWith(user, 10, 'tok', expense.account_id);
   });
 
   it('create returns the batch from the service', async () => {
@@ -74,14 +77,14 @@ describe('TransactionsController', () => {
       ],
     };
 
-    expect(await controller.create(dto)).toBe(batch);
-    expect(transactionsService.create).toHaveBeenCalledWith(dto);
+    expect(await controller.create(dto, user)).toBe(batch);
+    expect(transactionsService.create).toHaveBeenCalledWith(dto, user);
   });
 
   it('get passes transaction_id to the service', async () => {
     transactionsService.getById.mockResolvedValue(expense);
 
-    expect(await controller.get({ transaction_id: expense.id })).toBe(expense);
-    expect(transactionsService.getById).toHaveBeenCalledWith(expense.id);
+    expect(await controller.get({ transaction_id: expense.id }, user)).toBe(expense);
+    expect(transactionsService.getById).toHaveBeenCalledWith(expense.id, user);
   });
 });
