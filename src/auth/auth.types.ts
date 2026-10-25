@@ -13,6 +13,19 @@ export interface AuthUser {
   exp: number;
 }
 
+/** Claims of an access token, as signed by TokensService.signAccess. */
+export interface AccessPayload {
+  sub: string;
+  role: Role;
+  sid: string;
+  jti: string;
+  exp: number;
+}
+
+export function toAuthUser(payload: AccessPayload): AuthUser {
+  return { id: payload.sub, role: payload.role, jti: payload.jti, sid: payload.sid, exp: payload.exp };
+}
+
 export interface TokenPair {
   access_token: string;
   refresh_token: string;

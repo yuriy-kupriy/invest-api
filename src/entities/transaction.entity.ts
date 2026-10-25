@@ -15,7 +15,8 @@ import { Instrument } from './instrument.entity';
 import { bigintTransformer } from './transformers';
 
 export type TransactionType = 'income' | 'expense' | 'transfer_in' | 'transfer_out' | 'buy' | 'sell';
-export type TransactionStatus = 'pending' | 'posted' | 'failed';
+export const TRANSACTION_STATUSES = ['pending', 'posted', 'failed'] as const;
+export type TransactionStatus = (typeof TRANSACTION_STATUSES)[number];
 
 /**
  * The main table (500k rows after seeding in HW #12). This is also the

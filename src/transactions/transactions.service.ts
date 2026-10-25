@@ -20,7 +20,7 @@ import { problem } from '@/shared/problem.exception';
 import { CreateTransactionsDto } from './dto/create-transactions.dto';
 import { TransactionsRepository } from './transactions.repository';
 
-const SIGN: Record<TransactionType, 1 | -1> = {
+export const SIGN: Record<TransactionType, 1 | -1> = {
   income: 1,
   transfer_in: 1,
   sell: 1,

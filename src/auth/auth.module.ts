@@ -40,5 +40,7 @@ import { ACCESS_TTL_SECONDS, JWT_AUDIENCE, JWT_ISSUER, TokensService } from './t
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
   ],
+  // The WS gateway has no Authorization header per message — it verifies the handshake token itself.
+  exports: [TokensService],
 })
 export class AuthModule {}
