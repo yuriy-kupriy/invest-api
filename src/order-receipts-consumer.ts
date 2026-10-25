@@ -11,12 +11,14 @@ import { dataSourceOptions } from './data-source';
  * demo:duplicate kill it for real.
  *
  * at-least-once in, exactly-once effect out:
- * - noAck: false, and the ack goes out only AFTER the receipt row is committed —
+ * - noAck: false, and the ack goes out only AFTER the effect is committed —
  *   a crash before the ack makes the broker redeliver, never lose;
- * - the receipt is INSERT … ON CONFLICT DO NOTHING on order_receipts' keys, so
- *   the redelivery finds the row and changes nothing.
- * The gap that remains: the row is committed but the ack is lost — harmless here
- * (the retry is a no-op), and HW #22 puts the mark and the effect in one COMMIT.
+ * - level 2 (HW #22): the inbox mark in processed_messages and the receipt
+ *   commit in ONE transaction, so "marked" and "applied" cannot disagree; a
+ *   redelivery (or a relay republish) hits the mark's key and does nothing;
+ * - level 1: the receipt itself is INSERT … ON CONFLICT DO NOTHING on
+ *   order_receipts' natural key (one receipt per order), so even a second event
+ *   for the same order changes nothing.
  */
 
 // writeSync, not console.log: a pipe to the parent is asynchronous on macOS, and
@@ -26,14 +28,26 @@ function report(line: string): void {
 }
 
 /** true — receipt issued now; false — it already existed (a duplicate delivery). */
+const CONSUMER = 'order-receipts';
+
 async function issueReceipt(ds: DataSource, event: OrderPlacedEvent): Promise<boolean> {
-  const rows: unknown[] = await ds.query(
-    `INSERT INTO order_receipts (order_id, event_id) VALUES ($1, $2)
-     ON CONFLICT DO NOTHING
-     RETURNING order_id`,
-    [event.data.orderId, event.eventId],
-  );
-  return rows.length > 0;
+  return ds.transaction(async (manager) => {
+    const marked: unknown[] = await manager.query(
+      `INSERT INTO processed_messages (message_id, consumer) VALUES ($1, $2)
+       ON CONFLICT DO NOTHING
+       RETURNING message_id`,
+      [event.eventId, CONSUMER],
+    );
+    if (marked.length === 0) return false;
+
+    const rows: unknown[] = await manager.query(
+      `INSERT INTO order_receipts (order_id, event_id) VALUES ($1, $2)
+       ON CONFLICT DO NOTHING
+       RETURNING order_id`,
+      [event.data.orderId, event.eventId],
+    );
+    return rows.length > 0;
+  });
 }
 
 async function main(): Promise<void> {
