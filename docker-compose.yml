@@ -113,6 +113,29 @@ services:
       pact-broker-db:
         condition: service_healthy
 
+  # Message broker (homework #19): order.placed goes out of checkout into
+  # invest.events and waits in a quorum queue until the receipts consumer acks
+  # it. 4.2 is the LTS line; the -management suffix brings the UI on :15672,
+  # which is where x-death on a dead-lettered message can be read by eye.
+  # app/app are dev credentials, same status as postgres/postgres above.
+  rabbitmq:
+    image: rabbitmq:4.2-management
+    environment:
+      RABBITMQ_DEFAULT_USER: app
+      RABBITMQ_DEFAULT_PASS: app
+    ports:
+      - '${RABBITMQ_HOST_PORT:-5672}:5672'
+      - '${RABBITMQ_MGMT_HOST_PORT:-15672}:15672'
+    volumes:
+      - rabbitmqdata:/var/lib/rabbitmq
+    healthcheck:
+      # Not "the port is open": between the TCP listener and the node accepting
+      # basic.publish there is a window where clients get ECONNRESET.
+      test: ['CMD', 'rabbitmq-diagnostics', '-q', 'check_running']
+      interval: 5s
+      timeout: 10s
+      retries: 20
+
   # Dev-only DB browser — not part of `docker compose up -d --wait` (grading
   # has no business getting an extra container), opt in with:
   #   docker compose --profile tools up -d pgadmin
@@ -149,3 +172,4 @@ volumes:
   pgdata:
   pgadmin_data:
   pactbrokerdata:
+  rabbitmqdata:
