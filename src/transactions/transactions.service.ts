@@ -4,6 +4,8 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { randomUUID } from 'node:crypto';
 import { DataSource } from 'typeorm';
 import { AccountsRepository } from '@/accounts/accounts.repository';
+import { AuthUser } from '@/auth/auth.types';
+import { assertOwner } from '@/auth/ownership';
 import { Env } from '@/config/env.schema';
 import {
   Transaction,
@@ -47,12 +49,17 @@ export class TransactionsService {
    */
   private readonly toWire = (tx: Transaction): TransactionResponse => toTransaction(tx, this.drift);
 
-  async list(limit: number, cursor?: string, accountId?: string): Promise<TransactionPage> {
-    if (accountId && !(await this.accountsRepo.has(accountId))) {
-      throw problem(HttpStatus.NOT_FOUND, 'account-not-found', `account ${accountId} was not found`);
+  async list(user: AuthUser, limit: number, cursor?: string, accountId?: string): Promise<TransactionPage> {
+    if (accountId) {
+      const account = await this.accountsRepo.findById(accountId);
+      if (!account) {
+        throw problem(HttpStatus.NOT_FOUND, 'account-not-found', `account ${accountId} was not found`);
+      }
+      assertOwner(account.user_id, user, `account ${accountId}`);
     }
 
     const rows = await this.transactionsRepo.findPage(
+      user.id,
       limit,
       cursor ? decodeCursor(cursor) : undefined,
       accountId,
@@ -77,7 +84,7 @@ export class TransactionsService {
    * few account_ids — and the write side (`saveMany`) resolves instrument
    * symbols and fx rates per unique value across the batch, not per entry.
    */
-  async create(input: CreateTransactionsDto): Promise<TransactionBatch> {
+  async create(input: CreateTransactionsDto, user: AuthUser): Promise<TransactionBatch> {
     const now = new Date().toISOString();
 
     const created = await this.dataSource.transaction(async (manager) => {
@@ -98,6 +105,8 @@ export class TransactionsService {
             `account ${entry.account_id} was not found`,
           );
         }
+        // Inside the transaction, so ownership cannot change between check and write.
+        assertOwner(account.user_id, user, `account ${account.id}`);
         if (account.currency !== entry.currency) {
           throw problem(
             HttpStatus.UNPROCESSABLE_ENTITY,
@@ -148,7 +157,7 @@ export class TransactionsService {
     return { transactions: created.map(this.toWire) };
   }
 
-  async getById(transactionId: string): Promise<TransactionResponse> {
+  async getById(transactionId: string, user: AuthUser): Promise<TransactionResponse> {
     const tx = await this.transactionsRepo.findById(transactionId);
     if (!tx) {
       throw problem(
@@ -157,6 +166,10 @@ export class TransactionsService {
         `transaction ${transactionId} was not found`,
       );
     }
+    // A transaction is owned through its account (accounts.user_id is NOT NULL,
+    // and the FK makes the account exist).
+    const account = await this.accountsRepo.findById(tx.account_id);
+    assertOwner(account!.user_id, user, `transaction ${transactionId}`);
     return this.toWire(tx);
   }
 }

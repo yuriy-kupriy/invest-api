@@ -2,21 +2,14 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, In, Repository } from 'typeorm';
 import { Account as AccountEntity } from '@/entities/account.entity';
-import { Account, AccountType } from '@/domain/account';
+import { Account, AccountType, OwnedAccount } from '@/domain/account';
 import { Currency } from '@/domain/currency';
 import { CursorPayload } from '@/shared/pagination';
 
-/**
- * Accounts created through this API attach to a fixed system user: the HW #9
- * domain type has no concept of "who owns this account" (it predates the HW
- * #12 schema's `users` table), while `accounts.user_id` is NOT NULL. The seed
- * script (src/seed.ts) creates this exact user, so it must have run first.
- */
-const SEED_OWNER_USER_ID = '00000001-0000-4000-8000-000000000001';
-
-function toDomain(entity: AccountEntity): Account {
+function toDomain(entity: AccountEntity): OwnedAccount {
   return {
     id: entity.id,
+    user_id: entity.userId,
     name: entity.name,
     type: entity.type,
     currency: entity.currency as Currency,
@@ -38,7 +31,7 @@ export class AccountsRepository {
     return manager ? manager.getRepository(AccountEntity) : this.repo;
   }
 
-  async findById(id: string, manager?: EntityManager): Promise<Account | undefined> {
+  async findById(id: string, manager?: EntityManager): Promise<OwnedAccount | undefined> {
     const entity = await this.repoFor(manager).findOne({ where: { id } });
     return entity ? toDomain(entity) : undefined;
   }
@@ -48,7 +41,7 @@ export class AccountsRepository {
    * entries can repeat the same account_id, so this resolves the whole batch
    * with one `WHERE id IN (...)` instead of one SELECT per entry.
    */
-  async findByIds(ids: string[], manager?: EntityManager): Promise<Account[]> {
+  async findByIds(ids: string[], manager?: EntityManager): Promise<OwnedAccount[]> {
     if (ids.length === 0) {
       return [];
     }
@@ -56,10 +49,15 @@ export class AccountsRepository {
     return entities.map(toDomain);
   }
 
-  /** Keyset page ordered by (created_at DESC, id DESC) — the cursor's sort key is created_at. */
-  async findPage(limit: number, cursor?: CursorPayload): Promise<Account[]> {
+  /**
+   * Keyset page of ONE user's accounts, ordered by (created_at DESC, id DESC).
+   * Ownership of a list is a WHERE, not a check after loading: foreign rows
+   * never leave the database. `userId` comes first so no caller can forget it.
+   */
+  async findPage(userId: string, limit: number, cursor?: CursorPayload): Promise<OwnedAccount[]> {
     const qb = this.repo
       .createQueryBuilder('a')
+      .where('a.userId = :userId', { userId })
       .orderBy('a.createdAt', 'DESC')
       .addOrderBy('a.id', 'DESC')
       .take(limit);
@@ -72,11 +70,11 @@ export class AccountsRepository {
     return entities.map(toDomain);
   }
 
-  async save(account: Account, manager?: EntityManager): Promise<Account> {
+  async save(account: Account, userId: string, manager?: EntityManager): Promise<Account> {
     const repo = this.repoFor(manager);
     const entity = repo.create({
       id: account.id,
-      userId: SEED_OWNER_USER_ID,
+      userId,
       currency: account.currency,
       name: account.name,
       type: account.type as AccountType,
@@ -92,9 +90,5 @@ export class AccountsRepository {
 
   async updateBalance(id: string, delta: number, manager?: EntityManager): Promise<void> {
     await this.repoFor(manager).increment({ id }, 'balanceCents', delta);
-  }
-
-  async has(id: string, manager?: EntityManager): Promise<boolean> {
-    return this.repoFor(manager).exists({ where: { id } });
   }
 }

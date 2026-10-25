@@ -13,6 +13,8 @@ import {
   ApiTags,
   ApiUnprocessableEntityResponse,
 } from '@nestjs/swagger';
+import { AuthUser } from '@/auth/auth.types';
+import { CurrentUser, Roles } from '@/auth/decorators';
 import { TransactionBatch, TransactionPage, TransactionResponse } from '@/domain/transaction';
 import { i18n } from '@/i18n/swagger';
 import { ProblemDto } from '@/shared/dto/problem.dto';
@@ -39,11 +41,12 @@ export class TransactionsController {
   @ApiBadRequestResponse(problemResponse(i18n('transactions.list.badRequest')))
   @ApiNotFoundResponse(problemResponse(i18n('transactions.list.notFound')))
   @ApiInternalServerErrorResponse(problemResponse(i18n('errors.internal')))
-  list(@Query() query: ListTransactionsQueryDto): Promise<TransactionPage> {
-    return this.transactionsService.list(query.limit, query.cursor, query.account_id);
+  list(@Query() query: ListTransactionsQueryDto, @CurrentUser() user: AuthUser): Promise<TransactionPage> {
+    return this.transactionsService.list(user, query.limit, query.cursor, query.account_id);
   }
 
   @Post()
+  @Roles('member')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary: i18n('transactions.create.summary'),
@@ -68,8 +71,8 @@ export class TransactionsController {
   @ApiConflictResponse(problemResponse(i18n('transactions.create.conflict')))
   @ApiUnprocessableEntityResponse(problemResponse(i18n('transactions.create.unprocessable')))
   @ApiInternalServerErrorResponse(problemResponse(i18n('errors.internal')))
-  create(@Body() body: CreateTransactionsDto): Promise<TransactionBatch> {
-    return this.transactionsService.create(body);
+  create(@Body() body: CreateTransactionsDto, @CurrentUser() user: AuthUser): Promise<TransactionBatch> {
+    return this.transactionsService.create(body, user);
   }
 
   @Get(':transaction_id')
@@ -79,7 +82,7 @@ export class TransactionsController {
   @ApiBadRequestResponse(problemResponse(i18n('transactions.get.badRequest')))
   @ApiNotFoundResponse(problemResponse(i18n('transactions.get.notFound')))
   @ApiInternalServerErrorResponse(problemResponse(i18n('errors.internal')))
-  get(@Param() params: TransactionIdParamDto): Promise<TransactionResponse> {
-    return this.transactionsService.getById(params.transaction_id);
+  get(@Param() params: TransactionIdParamDto, @CurrentUser() user: AuthUser): Promise<TransactionResponse> {
+    return this.transactionsService.getById(params.transaction_id, user);
   }
 }

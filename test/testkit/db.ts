@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -18,6 +18,7 @@ import { TransactionsAccountBookedIndexCovering1789240000000 } from '../../src/m
 import { TimestampMillisecondPrecision1789250000000 } from '../../src/migrations/1789250000000-TimestampMillisecondPrecision';
 import { FxRatePrimaryKeyCurrencyFirst1789260000000 } from '../../src/migrations/1789260000000-FxRatePrimaryKeyCurrencyFirst';
 import { JobQueue1789922194647 } from '../../src/migrations/1789922194647-JobQueue';
+import { Auth1790000000000 } from '../../src/migrations/1790000000000-Auth';
 
 const ENTITIES = [User, Account, Currency, Instrument, Category, FxRate, Transaction, Job];
 
@@ -34,10 +35,12 @@ const MIGRATIONS = [
   TimestampMillisecondPrecision1789250000000,
   FxRatePrimaryKeyCurrencyFirst1789260000000,
   JobQueue1789922194647,
+  Auth1790000000000,
 ];
 
 /** Every table the suites write to, ordered for readability — CASCADE does the real work. */
-const TABLES = 'transactions, accounts, instruments, categories, fx_rate, job_queue, users, currency';
+const TABLES =
+  'refresh_tokens, revoked_access_tokens, transactions, accounts, instruments, categories, fx_rate, job_queue, users, currency';
 
 export async function startPg(): Promise<StartedPostgreSqlContainer> {
   return new PostgreSqlContainer('postgres:16-alpine')
@@ -73,6 +76,18 @@ export function applyEnv(container: StartedPostgreSqlContainer): void {
   process.env.NODE_ENV = 'test';
   process.env.DRIFT = '0';
   process.env.FX_SYNC_ON_START = '0';
+
+  // A one-off ES256 pair per test run — same shape the README ## Grading block
+  // generates. The real signing key never leaves the vault.
+  const keys = generateKeyPairSync('ec', {
+    namedCurve: 'P-256',
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+  });
+  process.env.JWT_KID = 'test';
+  process.env.JWT_PRIVATE_KEY = Buffer.from(keys.privateKey).toString('base64');
+  process.env.JWT_PUBLIC_KEY = Buffer.from(keys.publicKey).toString('base64');
+  process.env.REFRESH_TOKEN_PEPPER = 'test-pepper';
 }
 
 /** A standalone DataSource for schema work and assertions, separate from Nest's. */

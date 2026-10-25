@@ -12,9 +12,11 @@ import { ProblemDto } from '@/shared/dto/problem.dto';
 import { problemResponse } from '@/shared/openapi';
 import { DbHealthDto, HealthDto } from './dto/health.dto';
 import { HealthService } from './health.service';
+import { Public } from '@/auth/decorators';
 
 @ApiTags('health')
 @ApiExtraModels(ProblemDto)
+@Public()
 @Controller('health')
 export class HealthController {
   constructor(private readonly healthService: HealthService) {}
