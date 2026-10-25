@@ -3,15 +3,13 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { ConfirmChannel, connect } from 'amqplib';
 import { DataSource } from 'typeorm';
-import { OrderPlacedEvent } from './broker/order-placed.event';
-import { publishEvent } from './broker/publisher';
 import { assertTopology, brokerUrl, DLQ, RECEIPTS_QUEUE } from './broker/topology';
-import { checkout } from './concurrency/checkout';
+import { checkout, CheckoutOptions, CheckoutSuccess } from './concurrency/checkout';
 import { dataSourceOptions } from './data-source';
 
 /**
- * Shared plumbing of the three HW #19 demos: a clean start, checkout with
- * publishing, the consumer as a child process, queue depths, and the
+ * Shared plumbing of the HW #19 and HW #22 demos: a clean start, checkout, the
+ * consumer and the outbox relay as child processes, the counts, and the
  * self-grading printout.
  */
 
@@ -21,8 +19,8 @@ const INSTRUMENT_ID = '00000003-0000-4000-8000-000000000001';
 const MARKER = 'hw19 demo:broker';
 const UNIT_PRICE_CENTS = 10_000;
 
-export interface Consumer {
-  /** Number of report lines starting with `word` ("delivered", "acked", …) and containing `contains`. */
+export interface Child {
+  /** Number of report lines starting with `word` ("delivered", "acked", "published", …) and containing `contains`. */
   count(word: string, contains?: string): number;
   /** Resolves with the signal (or null) the process died of. */
   exited: Promise<NodeJS.Signals | null>;
@@ -32,13 +30,18 @@ export interface Demo {
   ds: DataSource;
   ch: ConfirmChannel;
   /** Starts the real consumer as a separate OS process; it is stopped when the demo ends. */
-  spawnConsumer(env?: Record<string, string>): Consumer;
+  spawnConsumer(env?: Record<string, string>): Child;
+  /** Starts the real outbox relay as a separate OS process; it is stopped when the demo ends. */
+  spawnRelay(env?: Record<string, string>): Child;
 }
 
 /**
  * Brings DB and broker to a known state — this demo's orders (and, by cascade,
- * their receipts) are gone, the account can afford them, both queues are
- * recreated empty — runs the demo, then stops its consumers and disconnects.
+ * their receipts and idempotency keys) are gone, the outbox is empty, the
+ * account can afford them, both queues are recreated empty — runs the demo, then
+ * stops its children and disconnects. The outbox is wiped whole on purpose:
+ * demo:race and friends leave unpublished events there, and this demo's relay
+ * would publish them and skew every count.
  * Acts as the topology bootstrap, so the publisher never declares anything.
  */
 export function runDemo(main: (demo: Demo) => Promise<void>): void {
@@ -52,6 +55,7 @@ export function runDemo(main: (demo: Demo) => Promise<void>): void {
         throw new Error(`Account ${ACCOUNT_ID} is missing — run "npm run seed" first.`);
       }
       await ds.query(`DELETE FROM transactions WHERE description = $1`, [MARKER]);
+      await ds.query(`DELETE FROM outbox`);
       await ds.query(`UPDATE accounts SET balance_cents = $2 WHERE id = $1`, [ACCOUNT_ID, 100 * UNIT_PRICE_CENTS]);
 
       const ch = await conn.createConfirmChannel();
@@ -59,7 +63,12 @@ export function runDemo(main: (demo: Demo) => Promise<void>): void {
       await ch.deleteQueue(DLQ);
       await assertTopology(ch);
 
-      await main({ ds, ch, spawnConsumer: (env) => startConsumer(children, env) });
+      await main({
+        ds,
+        ch,
+        spawnConsumer: (env) => startChild(children, 'order-receipts-consumer.js', 'consumer', env),
+        spawnRelay: (env) => startChild(children, 'outbox-relay.js', 'relay', env),
+      });
     } finally {
       children.forEach((child) => child.kill('SIGTERM'));
       await conn.close();
@@ -72,8 +81,8 @@ export function runDemo(main: (demo: Demo) => Promise<void>): void {
   });
 }
 
-function startConsumer(children: ChildProcess[], env: Record<string, string> = {}): Consumer {
-  const child = spawn(process.execPath, [join(__dirname, 'order-receipts-consumer.js')], {
+function startChild(children: ChildProcess[], script: string, prefix: string, env: Record<string, string> = {}): Child {
+  const child = spawn(process.execPath, [join(__dirname, script)], {
     env: { ...process.env, ...env },
     stdio: ['ignore', 'pipe', 'inherit'],
   });
@@ -85,22 +94,45 @@ function startConsumer(children: ChildProcess[], env: Record<string, string> = {
   });
   return {
     count: (word, contains = '') =>
-      lines.filter((l) => l.startsWith(`consumer ${word}`) && l.includes(contains)).length,
+      lines.filter((l) => l.startsWith(`${prefix} ${word}`) && l.includes(contains)).length,
     exited: new Promise((resolve) => child.on('exit', (_code, signal) => resolve(signal))),
   };
 }
 
-/** One checkout of one unit; order.placed goes out through `publish` after COMMIT. */
-export async function placeOrder(
-  demo: Demo,
-  publish: (event: OrderPlacedEvent) => Promise<void> = (event) => publishEvent(demo.ch, event),
-): Promise<void> {
+/** One checkout of one unit; order.placed lands in the outbox, the relay publishes it. */
+export async function placeOrder(demo: Demo, options?: CheckoutOptions): Promise<CheckoutSuccess> {
   const result = await checkout(
     demo.ds,
     { accountId: ACCOUNT_ID, instrumentId: INSTRUMENT_ID, quantity: 1, unitPriceCents: UNIT_PRICE_CENTS, description: MARKER },
-    publish,
+    options,
   );
   if (!result.ok) throw new Error(`checkout rejected: ${result.reason}`);
+  return result;
+}
+
+/** This demo's orders. */
+export async function orderCount(ds: DataSource): Promise<number> {
+  const [{ count }]: { count: number }[] = await ds.query(
+    `SELECT count(*)::int AS count FROM transactions WHERE description = $1`,
+    [MARKER],
+  );
+  return count;
+}
+
+/** Outbox rows and how many of them the relay marked published (runDemo empties it first). */
+export async function outboxCounts(ds: DataSource): Promise<{ outbox: number; published: number }> {
+  const [row]: { outbox: number; published: number }[] = await ds.query(
+    `SELECT count(*)::int AS outbox, count(published_at)::int AS published FROM outbox`,
+  );
+  return row;
+}
+
+/** Inbox marks for this run's events. */
+export async function processedCount(ds: DataSource): Promise<number> {
+  const [{ count }]: { count: number }[] = await ds.query(
+    `SELECT count(*)::int AS count FROM processed_messages WHERE message_id IN (SELECT id FROM outbox)`,
+  );
+  return count;
 }
 
 export async function queueDepths(ch: ConfirmChannel): Promise<{ work: number; dlq: number }> {

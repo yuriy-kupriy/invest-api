@@ -1,3 +1,4 @@
+import { relayBatch } from './broker/relay';
 import { finish, placeOrder, queueDepths, receiptCount, runDemo, waitFor } from './demo-broker-kit';
 
 /**
@@ -5,10 +6,11 @@ import { finish, placeOrder, queueDepths, receiptCount, runDemo, waitFor } from 
  * once. One checkout publishes order.placed; consumer #1 issues the receipt and
  * is SIGKILLed before its ack (a real crash: the OS closes the socket, not a
  * polite channel.close()). The broker redelivers to consumer #2, whose INSERT
- * hits order_receipts' key and does nothing — then acks.
+ * hits processed_messages' key and does nothing — then acks.
  */
 runDemo(async (demo) => {
   await placeOrder(demo);
+  await relayBatch(demo.ds, demo.ch);
 
   const first = demo.spawnConsumer({ CRASH_AFTER_EFFECT: '1' });
   const signal = await first.exited;

@@ -1,22 +1,18 @@
-import { publishEvent } from './broker/publisher';
+import { relayBatch } from './broker/relay';
 import { PREFETCH } from './broker/topology';
 import { finish, placeOrder, queueDepths, receiptCount, runDemo, waitFor } from './demo-broker-kit';
 
 /**
- * HW #19 demo:publish — happy path. Five checkouts publish order.placed while
- * NO consumer is running: the broker keeps them (work=5 in between), then the
+ * HW #19 demo:publish — happy path. Five checkouts, then one outbox relay pass
+ * (HW #22) publishes their order.placed while NO consumer is running: the
+ * broker keeps them (work=5 in between), then the
  * consumer starts, gets all five, applies five effects and acks five times.
  */
 const ORDERS = 5;
 
 runDemo(async (demo) => {
-  let published = 0;
-  for (let i = 0; i < ORDERS; i++) {
-    await placeOrder(demo, async (event) => {
-      await publishEvent(demo.ch, event);
-      published++;
-    });
-  }
+  for (let i = 0; i < ORDERS; i++) await placeOrder(demo);
+  const published = await relayBatch(demo.ds, demo.ch);
   const waiting = (await queueDepths(demo.ch)).work;
   console.log(`${published} published with no consumer running; queue holds ${waiting} — starting the consumer`);
 
