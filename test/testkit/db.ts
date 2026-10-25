@@ -19,6 +19,8 @@ import { TimestampMillisecondPrecision1789250000000 } from '../../src/migrations
 import { FxRatePrimaryKeyCurrencyFirst1789260000000 } from '../../src/migrations/1789260000000-FxRatePrimaryKeyCurrencyFirst';
 import { JobQueue1789922194647 } from '../../src/migrations/1789922194647-JobQueue';
 import { Auth1790000000000 } from '../../src/migrations/1790000000000-Auth';
+import { OrderReceipts1790100000000 } from '../../src/migrations/1790100000000-OrderReceipts';
+import { Outbox1790200000000 } from '../../src/migrations/1790200000000-Outbox';
 
 const ENTITIES = [User, Account, Currency, Instrument, Category, FxRate, Transaction, Job];
 
@@ -36,11 +38,13 @@ const MIGRATIONS = [
   FxRatePrimaryKeyCurrencyFirst1789260000000,
   JobQueue1789922194647,
   Auth1790000000000,
+  OrderReceipts1790100000000,
+  Outbox1790200000000,
 ];
 
 /** Every table the suites write to, ordered for readability — CASCADE does the real work. */
 const TABLES =
-  'refresh_tokens, revoked_access_tokens, transactions, accounts, instruments, categories, fx_rate, job_queue, users, currency';
+  'refresh_tokens, revoked_access_tokens, transactions, accounts, instruments, categories, fx_rate, job_queue, outbox, users, currency';
 
 export async function startPg(): Promise<StartedPostgreSqlContainer> {
   return new PostgreSqlContainer('postgres:16-alpine')

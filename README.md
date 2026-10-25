@@ -2372,6 +2372,9 @@ exchange і routing key. DLX висить **аргументом черги**: �
 
 ### Публікація
 
+> З ДЗ #22 подія йде через outbox і relay, див. [«ДЗ #22 курсового»](#дз-22-курсового-transactional-outbox-та-ідемпотентність);
+> параметра `publish` у `checkout` більше немає. Нижче — як було в ДЗ #19.
+
 [`checkout`](src/concurrency/checkout.ts) отримав опційний `publish`, який викликається **після
 COMMIT** — споживач ніколи не почує про відкочене замовлення. Публікація йде в confirm-канал
 (callback підтвердження саме цього повідомлення, а не `waitForConfirms`, який чекав би на всі
@@ -2508,8 +2511,9 @@ consumer: BEGIN ─ processed_messages ON CONFLICT DO NOTHING ─ order_receipts
   zod-схема з ДЗ #19), а не ORM-рядок.
 - **Relay** [`relayBatch`](src/broker/relay.ts) + процес [`outbox-relay.ts`](src/outbox-relay.ts).
   Порядок: `FOR UPDATE SKIP LOCKED LIMIT 100` → `publish` у confirm-канал → `UPDATE published_at`.
-  Якщо `publish` падає, рахується `attempts + 1`, уже опубліковане в цьому проході лишається
-  позначеним, решта піде наступним проходом.
+  Якщо `publish` падає або підтвердження від брокера не приходить за 10 с (брокер під memory alarm
+  блокує видавців, і без тайм-ауту транзакція з локами висіла б вічно), рахується `attempts + 1`,
+  уже опубліковане в цьому проході лишається позначеним, решта піде наступним проходом.
 - **Споживач** [`order-receipts-consumer.ts`](src/order-receipts-consumer.ts), два рівні:
   - рівень 2 (inbox): `INSERT INTO processed_messages … ON CONFLICT DO NOTHING` і сам ефект
     стоять в **одній** транзакції; 0 рядків означає дубль, і споживач просто робить ack;
@@ -2521,10 +2525,15 @@ consumer: BEGIN ─ processed_messages ON CONFLICT DO NOTHING ─ order_receipts
   чекає на унікальному індексі, доки перший не закомітиться, бачить ключ зайнятим, відкочується і
   повертає збережену відповідь (`replayed: true`). Ключ займається **до** списання, тож близнюк
   ніколи не відповість `insufficient_funds` на замовлення, яке пройшло. Ключ ідентифікує намір, а
-  не тіло: два однакові замовлення з різними ключами — це два замовлення. HTTP-маршруту checkout
-  у проєкті немає; на HTTP-краї вже стоїть [`IdempotencyInterceptor`](src/shared/idempotency.interceptor.ts)
-  з ДЗ #9, який відповідає 422 на той самий ключ з іншим тілом. Маршрут, що з'явиться, просто
-  передасть заголовок у `checkout`.
+  не тіло: два однакові замовлення з різними ключами — це два замовлення. Той самий ключ з **іншим**
+  замовленням (інший інструмент, кількість чи ціна) — помилка клієнта: `checkout` повертає
+  `idempotency_key_reuse`, а не стару відповідь, яка видала б нове замовлення за розміщене.
+  HTTP-маршруту checkout у проєкті немає; маршрут, що з'явиться, просто передасть заголовок у
+  `checkout` (і відповість на `idempotency_key_reuse` 422, як [`IdempotencyInterceptor`](src/shared/idempotency.interceptor.ts)
+  з ДЗ #9).
+- **Тести.** [`outbox.int-spec.ts`](test/integration/outbox.int-spec.ts) на testcontainers ганяє
+  те саме в CI: два паралельні запити з одним ключем, повтор ключа з іншим замовленням, відкат
+  замовлення разом з подією, тайм-аут relay без підтвердження.
 
 ### Три прогони (RabbitMQ 4.2.9, Postgres 16, docker на M-series)
 
@@ -2601,3 +2610,4 @@ publish → UPDATE. Падіння між ними дає подію, яка в�
 | [`src/outbox-relay.ts`](src/outbox-relay.ts) | relay як окремий процес (`npm run relay`), `CRASH_AFTER_PUBLISH` |
 | [`src/order-receipts-consumer.ts`](src/order-receipts-consumer.ts) | inbox-позначка й квитанція в одній транзакції |
 | [`src/demo-broker-kit.ts`](src/demo-broker-kit.ts), `src/demo-{outbox,crash-write,crash-relay}.ts` | три самоперевірні демо |
+| [`test/integration/outbox.int-spec.ts`](test/integration/outbox.int-spec.ts) | ключ ідемпотентності, спільний COMMIT, тайм-аут relay — у CI |

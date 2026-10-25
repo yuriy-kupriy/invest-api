@@ -26,14 +26,12 @@ export interface CheckoutRequest {
   description?: string | null;
 }
 
-export type CheckoutRejection = 'insufficient_funds' | 'account_not_found' | 'no_fx_rate';
+export type CheckoutRejection = 'insufficient_funds' | 'account_not_found' | 'no_fx_rate' | 'idempotency_key_reuse';
 
 export interface CheckoutSuccess {
   ok: true;
   orderId: string;
   jobId: string;
-  /** order.placed's eventId — the outbox row id and the broker messageId. */
-  eventId: string;
   /** true when this is a repeat of an Idempotency-Key: the stored result, nothing new written. */
   replayed?: boolean;
   /** Balance after the debit, straight from the guarded UPDATE's RETURNING. */
@@ -68,6 +66,16 @@ class CheckoutReplay extends Error {
     super('idempotency key already used');
     this.name = 'CheckoutReplay';
   }
+}
+
+/** What makes two requests "the same order" for an Idempotency-Key (description is a label, not intent). */
+function intentOf({ instrumentId, quantity, unitPriceCents }: CheckoutRequest) {
+  return { instrumentId, quantity, unitPriceCents };
+}
+
+interface StoredResponse {
+  intent: ReturnType<typeof intentOf>;
+  result: CheckoutSuccess;
 }
 
 export interface CheckoutOptions {
@@ -222,7 +230,6 @@ export async function checkout(
         ok: true,
         orderId,
         jobId: jobRows[0].id,
-        eventId: event.eventId,
         balanceCents: Number(debited.balance_cents),
         costCents,
         currency: debited.currency,
@@ -231,7 +238,7 @@ export async function checkout(
       if (idempotencyKey !== undefined) {
         await manager.query(
           `UPDATE idempotency_keys SET order_id = $3, response = $4::jsonb WHERE account_id = $1 AND key = $2`,
-          [accountId, idempotencyKey, orderId, JSON.stringify(result)],
+          [accountId, idempotencyKey, orderId, JSON.stringify({ intent: intentOf(request), result })],
         );
       }
 
@@ -243,11 +250,20 @@ export async function checkout(
       return { ok: false, reason: error.reason };
     }
     if (error instanceof CheckoutReplay) {
-      const [stored]: { response: CheckoutSuccess }[] = await dataSource.query(
+      const [{ response }]: { response: StoredResponse }[] = await dataSource.query(
         `SELECT response FROM idempotency_keys WHERE account_id = $1 AND key = $2`,
         [accountId, idempotencyKey],
       );
-      return { ...stored.response, replayed: true };
+      // Same key, different order: a client bug. Replaying the old order would report this one as placed.
+      const { intent } = response;
+      if (
+        intent.instrumentId !== instrumentId ||
+        intent.quantity !== quantity ||
+        intent.unitPriceCents !== unitPriceCents
+      ) {
+        return { ok: false, reason: 'idempotency_key_reuse' };
+      }
+      return { ...response.result, replayed: true };
     }
 
     throw error;

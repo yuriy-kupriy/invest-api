@@ -22,12 +22,17 @@ import { publishEvent } from './publisher';
  *
  * `onPublished` runs between the broker's confirm and the UPDATE — the exact
  * spot demo:crash-relay kills the process in.
+ *
+ * A confirm that never comes (a broker under a memory alarm blocks publishers)
+ * would keep this transaction and its row locks open forever, so each publish
+ * gets `publishTimeoutMs` and then counts as a failed attempt.
  */
 export async function relayBatch(
   ds: DataSource,
   ch: ConfirmChannel,
   limit = 100,
   onPublished?: (event: OrderPlacedEvent) => Promise<void> | void,
+  publishTimeoutMs = 10_000,
 ): Promise<number> {
   return ds.transaction(async (manager) => {
     const rows: { id: string; payload: OrderPlacedEvent }[] = await manager.query(
@@ -41,13 +46,21 @@ export async function relayBatch(
 
     let published = 0;
     for (const row of rows) {
+      let timer: NodeJS.Timeout | undefined;
       try {
-        await publishEvent(ch, row.payload);
+        await Promise.race([
+          publishEvent(ch, row.payload),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error(`no broker confirm within ${publishTimeoutMs} ms`)), publishTimeoutMs);
+          }),
+        ]);
       } catch (error) {
         // Count the attempt, keep what this pass already published, retry the rest later.
         console.error(error);
         await manager.query(`UPDATE outbox SET attempts = attempts + 1 WHERE id = $1`, [row.id]);
         break;
+      } finally {
+        clearTimeout(timer);
       }
       await onPublished?.(row.payload);
       await manager.query(`UPDATE outbox SET published_at = now(), attempts = attempts + 1 WHERE id = $1`, [row.id]);
