@@ -1,11 +1,12 @@
 import { DataSource, EntityManager } from 'typeorm';
-import { orderPlaced, OrderPlacedEvent } from '../broker/order-placed.event';
+import { orderPlaced } from '../broker/order-placed.event';
 
 /**
  * The domain's checkout: buy `quantity` units of an instrument out of an
  * account, in one transaction — debit the account, write the order, enqueue the
- * receipt job. Either all three land or none of them does, so an order can
- * never exist without its money movement or without its post-processing task.
+ * receipt job, write order.placed to the outbox. Either all of them land or none
+ * does, so an order can never exist without its money movement, its
+ * post-processing task or its event — and no event without its order.
  *
  * On the scarce resource. A marketplace checkout guards two counters: a
  * product's stock and the buyer's balance. This ledger has no inventory — the
@@ -25,12 +26,14 @@ export interface CheckoutRequest {
   description?: string | null;
 }
 
-export type CheckoutRejection = 'insufficient_funds' | 'account_not_found' | 'no_fx_rate';
+export type CheckoutRejection = 'insufficient_funds' | 'account_not_found' | 'no_fx_rate' | 'idempotency_key_reuse';
 
 export interface CheckoutSuccess {
   ok: true;
   orderId: string;
   jobId: string;
+  /** true when this is a repeat of an Idempotency-Key: the stored result, nothing new written. */
+  replayed?: boolean;
   /** Balance after the debit, straight from the guarded UPDATE's RETURNING. */
   balanceCents: number;
   costCents: number;
@@ -55,6 +58,34 @@ class CheckoutRejected extends Error {
     super(reason);
     this.name = 'CheckoutRejected';
   }
+}
+
+/** Thrown when the Idempotency-Key is already taken: roll back, then replay the stored result. */
+class CheckoutReplay extends Error {
+  constructor() {
+    super('idempotency key already used');
+    this.name = 'CheckoutReplay';
+  }
+}
+
+/** What makes two requests "the same order" for an Idempotency-Key (description is a label, not intent). */
+function intentOf({ instrumentId, quantity, unitPriceCents }: CheckoutRequest) {
+  return { instrumentId, quantity, unitPriceCents };
+}
+
+interface StoredResponse {
+  intent: ReturnType<typeof intentOf>;
+  result: CheckoutSuccess;
+}
+
+export interface CheckoutOptions {
+  /**
+   * The client's Idempotency-Key, scoped to the account. It names the intent,
+   * not the body: two identical orders with different keys are two orders.
+   */
+  idempotencyKey?: string;
+  /** Runs last inside the transaction, after the outbox row — the fault-injection seam of demo:crash-write. */
+  beforeCommit?: (manager: EntityManager) => Promise<void>;
 }
 
 interface DebitRow {
@@ -121,18 +152,23 @@ async function resolveFxRate(manager: EntityManager, currency: string): Promise<
 }
 
 /**
- * `publish` (HW #19) receives order.placed only after COMMIT, so no consumer
- * ever hears about an order that was rolled back. The opposite gap stays open:
- * a crash between COMMIT and publish loses the event — closing it needs a
- * transactional outbox (HW #22), because there is no shared COMMIT between
- * Postgres and the broker.
+ * order.placed goes into the outbox in the SAME transaction as the order (HW #22):
+ * one COMMIT makes both visible, one ROLLBACK removes both, and the relay
+ * (src/broker/relay.ts) carries the event to the broker afterwards. Nothing is
+ * published from in here — a broker cannot roll back.
+ *
+ * With an Idempotency-Key the key is claimed by the FIRST statement. A
+ * concurrent twin blocks on the key's unique index until the first commits,
+ * then finds it taken and replays the stored result — it never gets as far as
+ * the debit, so it cannot answer insufficient_funds for an order that went through.
  */
 export async function checkout(
   dataSource: DataSource,
   request: CheckoutRequest,
-  publish?: (event: OrderPlacedEvent) => Promise<void>,
+  options: CheckoutOptions = {},
 ): Promise<CheckoutResult> {
   const { accountId, instrumentId, quantity, unitPriceCents } = request;
+  const { idempotencyKey } = options;
 
   if (!Number.isInteger(quantity) || quantity <= 0) {
     throw new Error(`checkout: quantity must be a positive integer, got ${quantity}`);
@@ -140,11 +176,20 @@ export async function checkout(
 
   const costCents = unitPriceCents * quantity;
 
-  let result: CheckoutSuccess;
   try {
-    // One callback, one connection from the pool, one BEGIN…COMMIT. All four
-    // statements below run on `manager`, so they share that single client.
-    result = await dataSource.transaction(async (manager): Promise<CheckoutSuccess> => {
+    // One callback, one connection from the pool, one BEGIN…COMMIT. Every
+    // statement below runs on `manager`, so they share that single client.
+    return await dataSource.transaction(async (manager): Promise<CheckoutSuccess> => {
+      if (idempotencyKey !== undefined) {
+        const claimed: unknown[] = await manager.query(
+          `INSERT INTO idempotency_keys (account_id, key) VALUES ($1, $2)
+           ON CONFLICT DO NOTHING
+           RETURNING key`,
+          [accountId, idempotencyKey],
+        );
+        if (claimed.length === 0) throw new CheckoutReplay();
+      }
+
       const debited = await debitAccount(manager, accountId, costCents);
       const fxRate = await resolveFxRate(manager, debited.currency);
 
@@ -165,40 +210,62 @@ export async function checkout(
           request.description ?? null,
         ],
       );
+      const orderId = orderRows[0].id;
 
       const jobRows: { id: string }[] = await manager.query(
         `INSERT INTO job_queue (type, payload)
          VALUES ('order_receipt', $1::jsonb)
          RETURNING id`,
-        [JSON.stringify({ order_id: orderRows[0].id, account_id: accountId })],
+        [JSON.stringify({ order_id: orderId, account_id: accountId })],
       );
 
-      return {
+      const event = orderPlaced({ orderId, accountId, instrumentId, quantity, costCents, currency: debited.currency });
+      await manager.query(
+        `INSERT INTO outbox (id, aggregate_type, aggregate_id, type, payload)
+         VALUES ($1, 'order', $2, $3, $4::jsonb)`,
+        [event.eventId, orderId, event.type, JSON.stringify(event)],
+      );
+
+      const result: CheckoutSuccess = {
         ok: true,
-        orderId: orderRows[0].id,
+        orderId,
         jobId: jobRows[0].id,
         balanceCents: Number(debited.balance_cents),
         costCents,
         currency: debited.currency,
       };
+
+      if (idempotencyKey !== undefined) {
+        await manager.query(
+          `UPDATE idempotency_keys SET order_id = $3, response = $4::jsonb WHERE account_id = $1 AND key = $2`,
+          [accountId, idempotencyKey, orderId, JSON.stringify({ intent: intentOf(request), result })],
+        );
+      }
+
+      await options.beforeCommit?.(manager);
+      return result;
     });
   } catch (error) {
     if (error instanceof CheckoutRejected) {
       return { ok: false, reason: error.reason };
     }
+    if (error instanceof CheckoutReplay) {
+      const [{ response }]: { response: StoredResponse }[] = await dataSource.query(
+        `SELECT response FROM idempotency_keys WHERE account_id = $1 AND key = $2`,
+        [accountId, idempotencyKey],
+      );
+      // Same key, different order: a client bug. Replaying the old order would report this one as placed.
+      const { intent } = response;
+      if (
+        intent.instrumentId !== instrumentId ||
+        intent.quantity !== quantity ||
+        intent.unitPriceCents !== unitPriceCents
+      ) {
+        return { ok: false, reason: 'idempotency_key_reuse' };
+      }
+      return { ...response.result, replayed: true };
+    }
 
     throw error;
   }
-
-  await publish?.(
-    orderPlaced({
-      orderId: result.orderId,
-      accountId,
-      instrumentId,
-      quantity,
-      costCents,
-      currency: result.currency,
-    }),
-  );
-  return result;
 }
