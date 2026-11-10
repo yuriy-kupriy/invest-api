@@ -6,6 +6,7 @@ import { AuthModule } from '@/auth/auth.module';
 import { validateEnv } from '@/config/env.validation';
 import { CurrenciesModule } from '@/currencies/currencies.module';
 import { DbModule } from '@/db/db.module';
+import { FilesModule } from '@/files/files.module';
 import { FxRatesModule } from '@/fx-rates/fx-rates.module';
 import { HealthModule } from '@/health/health.module';
 import { OrdersModule } from '@/orders/orders.module';
@@ -31,6 +32,7 @@ import { TransactionsModule } from '@/transactions/transactions.module';
     FxRatesModule,
     TransactionsModule,
     OrdersModule,
+    FilesModule,
   ],
   providers: [
     {

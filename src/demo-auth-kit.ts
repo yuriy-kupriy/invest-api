@@ -31,6 +31,7 @@ export interface Reply {
 }
 
 export interface Http {
+  base: string;
   call(method: string, path: string, opts?: { token?: string; body?: unknown }): Promise<Reply>;
   login(user: { email: string }): Promise<Reply>;
   refresh(refreshToken: string): Promise<Reply>;
@@ -66,15 +67,23 @@ function http(base: string): Http {
     return { status: res.status, body: text ? JSON.parse(text) : undefined };
   };
   return {
+    base,
     call,
     login: (user) => call('POST', '/auth/login', { body: { email: user.email, password: PASSWORD } }),
     refresh: (refreshToken) => call('POST', '/auth/refresh', { body: { refresh_token: refreshToken } }),
   };
 }
 
+/** Lets a scenario take the API down and bring it back (HW #26 demo:upload). */
+export interface AppControl {
+  stop(): Promise<number>;
+  /** Always a NEW ephemeral port: fetch's pool may hold a dead socket for the old one. */
+  start(): Promise<Http>;
+}
+
 export async function runDemo(
   expected: Record<string, number[]>,
-  scenario: (http: Http) => Promise<Record<string, number>>,
+  scenario: (http: Http, app: AppControl) => Promise<Record<string, number>>,
 ): Promise<void> {
   // Offline and deterministic: no NBU fetch on boot. Set before create-app is
   // loaded, because the config is validated when AppModule is imported.
@@ -87,11 +96,20 @@ export async function runDemo(
     await reset(ds);
 
     const { createApp } = await import('./create-app');
-    app = await createApp();
-    await app.listen(0, '127.0.0.1');
-    const { port } = app.getHttpServer().address() as AddressInfo;
+    let port = 0;
+    const start = async () => {
+      app = await createApp();
+      await app.listen(0, '127.0.0.1');
+      port = (app.getHttpServer().address() as AddressInfo).port;
+      return http(`http://127.0.0.1:${port}`);
+    };
+    const stop = async () => {
+      await app?.close();
+      app = undefined;
+      return port;
+    };
 
-    const results = await scenario(http(`http://127.0.0.1:${port}`));
+    const results = await scenario(await start(), { start, stop });
 
     const broken: string[] = [];
     for (const [key, allowed] of Object.entries(expected)) {
