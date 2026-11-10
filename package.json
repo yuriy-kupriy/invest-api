@@ -49,7 +49,11 @@
     "db:fx-rates": "bash scripts/fx-rates-snapshot.sh load",
     "test:integration": "jest --config test/integration/jest-integration.json",
     "test:contract": "jest --config test/contract/jest-consumer.json",
-    "verify:provider": "jest --config test/contract/jest-provider.json"
+    "verify:provider": "jest --config test/contract/jest-provider.json",
+    "demo:cache": "npm run build && bash scripts/with-secrets.sh dev node dist/demo-cache.js",
+    "demo:session": "npm run build && bash scripts/with-secrets.sh dev node dist/demo-session.js",
+    "demo:ratelimit": "npm run build && bash scripts/with-secrets.sh dev node dist/demo-ratelimit.js",
+    "demo:queue": "npm run build && bash scripts/with-secrets.sh dev node dist/demo-queue.js"
   },
   "engines": {
     "node": ">=18"
@@ -66,10 +70,12 @@
     "@nestjs/typeorm": "^11.0.3",
     "@nestjs/websockets": "^10.4.22",
     "amqplib": "^0.10.9",
+    "bullmq": "^6.7.3",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
     "express": "^4.22.2",
     "express-openapi-validator": "^5.6.2",
+    "ioredis": "^5.11.1",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "passport-local": "^1.0.0",
