@@ -136,6 +136,57 @@ services:
       timeout: 10s
       retries: 20
 
+  # Redis (homework #23) — two instances on purpose, their eviction policies are
+  # incompatible and maxmemory is per process (SELECT 1 does not split it).
+  # Cache: bounded memory, allkeys-lru evicts cold keys instead of failing writes.
+  redis-cache:
+    image: redis:8.2-alpine
+    command: redis-server --maxmemory 64mb --maxmemory-policy allkeys-lru --save "" --appendonly no
+    ports:
+      - '${REDIS_CACHE_HOST_PORT:-6390}:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Queue (BullMQ) and sessions: nothing may be evicted, BullMQ requires
+  # noeviction; AOF everysec loses at most a second of jobs on a crash.
+  redis-queue:
+    image: redis:8.2-alpine
+    command: redis-server --maxmemory-policy noeviction --appendonly yes --appendfsync everysec
+    ports:
+      - '${REDIS_QUEUE_HOST_PORT:-6391}:6379'
+    volumes:
+      - redisqueuedata:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # S3-compatible storage (homework #26). MinIO's own images are no longer
+  # published (minio/minio and quay.io/minio are gone), so this is the pgsty
+  # community build of the same server, pinned by tag. hw26user/hw26secretpass
+  # are dev credentials, same status as postgres/postgres above. Data lives in
+  # tmpfs: every `down` leaves a clean slate; 1g, because on 256m the container
+  # dies in the middle of a multipart run.
+  minio:
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+    command: ['server', '/data']
+    environment:
+      MINIO_ROOT_USER: hw26user
+      MINIO_ROOT_PASSWORD: hw26secretpass
+    ports:
+      - '${MINIO_HOST_PORT:-22650}:9000'
+    tmpfs:
+      - /data:size=1g
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:9000/minio/health/ready']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   # Dev-only DB browser — not part of `docker compose up -d --wait` (grading
   # has no business getting an extra container), opt in with:
   #   docker compose --profile tools up -d pgadmin
@@ -173,3 +224,4 @@ volumes:
   pgadmin_data:
   pactbrokerdata:
   rabbitmqdata:
+  redisqueuedata:
