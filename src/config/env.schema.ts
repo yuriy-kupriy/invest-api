@@ -122,6 +122,30 @@ export const envSchema = z.object({
 
   /** HMAC key for refresh-token hashes, so a table dump is not a dump of live sessions. */
   REFRESH_TOKEN_PEPPER: z.string().min(8),
+
+  // HW #26. Object storage. Endpoint empty => real AWS S3; set => an emulator
+  // (MinIO), which needs path-style URLs. Keys and bucket are vault-only, no
+  // defaults: the access key is the right to read and write every file.
+
+  /** S3 API endpoint, e.g. http://127.0.0.1:22650 for the compose MinIO. Empty => AWS. */
+  STORAGE_ENDPOINT: z.string().url({ protocol: /^https?$/ }).optional().or(z.literal('').transform(() => undefined)),
+
+  /** Region the requests are signed for. MinIO accepts any; AWS needs the bucket's. */
+  STORAGE_REGION: z.string().min(1).default('us-east-1'),
+
+  STORAGE_ACCESS_KEY: z.string().min(1),
+  STORAGE_SECRET_KEY: z.string().min(1),
+  STORAGE_BUCKET: z.string().min(3),
 });
+
+/** The storage slice, parsed on its own by scripts that do not boot Nest (edge, demo:cdn). */
+export const storageEnvSchema = envSchema.pick({
+  STORAGE_ENDPOINT: true,
+  STORAGE_REGION: true,
+  STORAGE_ACCESS_KEY: true,
+  STORAGE_SECRET_KEY: true,
+  STORAGE_BUCKET: true,
+});
+export type StorageEnv = z.infer<typeof storageEnvSchema>;
 
 export type Env = z.infer<typeof envSchema>;

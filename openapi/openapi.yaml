@@ -49,6 +49,8 @@ tags:
     description: FX rates — currency rate lookups backing transaction snapshots
   - name: currencies
     description: Currencies — the ISO 4217 lookup table accounts, transactions, and fx-rates read from
+  - name: uploads
+    description: Uploads — presigned PUT and resumable multipart straight to object storage
 
 paths:
   /auth/login:
@@ -454,6 +456,109 @@ paths:
         '400':
           $ref: '#/components/responses/BadRequest'
 
+  /uploads/intent:
+    post:
+      operationId: uploadIntent
+      summary: Start an upload
+      description: >
+        Validates the content type against an allowlist, generates the object key
+        itself (`uploads/{userId}/{uuid}.{ext}` — the filename never reaches it),
+        records a PENDING file and returns a presigned PUT URL, or, above the
+        multipart threshold, presigned URLs for every part.
+      tags: [uploads]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadIntentRequest'
+      responses:
+        '200':
+          description: Where to put the bytes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadIntent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /uploads/parts:
+    post:
+      operationId: uploadParts
+      summary: Resume a multipart upload
+      description: >
+        Asks storage which parts it already holds (ListParts) and signs URLs only
+        for the missing ones.
+      tags: [uploads]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadRef'
+      responses:
+        '200':
+          description: Parts already stored and URLs for the rest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadParts'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /uploads/commit:
+    post:
+      operationId: uploadCommit
+      summary: Finish an upload
+      description: >
+        Completes a multipart upload if there is one, then checks with HeadObject
+        that the object exists and has the announced size. Only then COMPLETED.
+        Nothing uploaded → 409.
+      tags: [uploads]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadRef'
+      responses:
+        '200':
+          description: The file is stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadedFile'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /fx-rates/{currency}/latest:
     get:
       operationId: getLatestFxRate
@@ -697,6 +802,108 @@ components:
             $ref: '#/components/schemas/Problem'
 
   schemas:
+    UploadIntentRequest:
+      type: object
+      additionalProperties: false
+      required: [filename, contentType, size]
+      properties:
+        filename:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Display only — never part of the object key.
+        contentType:
+          type: string
+          enum: [image/png, image/jpeg, image/webp, application/pdf, application/gzip]
+        size:
+          type: integer
+          minimum: 1
+          maximum: 53687091200
+
+    PartUrl:
+      type: object
+      additionalProperties: false
+      required: [partNumber, url]
+      properties:
+        partNumber:
+          type: integer
+          minimum: 1
+          maximum: 10000
+        url:
+          type: string
+
+    UploadIntent:
+      type: object
+      additionalProperties: false
+      required: [fileId, key, expiresIn]
+      properties:
+        fileId:
+          type: string
+          format: uuid
+        key:
+          type: string
+        expiresIn:
+          type: integer
+          description: Seconds the URLs stay valid.
+        uploadUrl:
+          type: string
+          description: Single PUT — files up to the multipart threshold.
+        partSize:
+          type: integer
+        partCount:
+          type: integer
+        parts:
+          type: array
+          items:
+            $ref: '#/components/schemas/PartUrl'
+
+    UploadRef:
+      type: object
+      additionalProperties: false
+      required: [fileId]
+      properties:
+        fileId:
+          type: string
+          format: uuid
+
+    UploadParts:
+      type: object
+      additionalProperties: false
+      required: [fileId, partSize, partCount, uploaded, parts, expiresIn]
+      properties:
+        fileId:
+          type: string
+          format: uuid
+        partSize:
+          type: integer
+        partCount:
+          type: integer
+        uploaded:
+          type: array
+          items:
+            type: integer
+        parts:
+          type: array
+          items:
+            $ref: '#/components/schemas/PartUrl'
+        expiresIn:
+          type: integer
+
+    UploadedFile:
+      type: object
+      additionalProperties: false
+      required: [fileId, key, status, size]
+      properties:
+        fileId:
+          type: string
+          format: uuid
+        key:
+          type: string
+        status:
+          type: string
+          enum: [PENDING, COMPLETED]
+        size:
+          type: integer
     TransactionStatus:
       type: string
       enum: [pending, posted, failed]
