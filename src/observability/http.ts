@@ -25,7 +25,8 @@ export function requestContextMiddleware(req: Request, res: Response, next: Next
       AsyncResource.bind(() => {
         const ms = Number(process.hrtime.bigint() - started) / 1e6;
         const fields = {
-          req: { method: req.method, url: req.originalUrl, headers: req.headers, body: req.body },
+          // No body: auth bodies (email, password) and transaction details stay out of the log.
+          req: { method: req.method, url: req.originalUrl, headers: req.headers },
           res: { statusCode: res.statusCode },
           ms: Math.round(ms * 100) / 100,
         };

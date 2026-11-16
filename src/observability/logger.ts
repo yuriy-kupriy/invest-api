@@ -9,20 +9,14 @@ import { requestContext } from './context';
  * share one key. userId / tenant / idempotencyKey come from AsyncLocalStorage;
  * no function takes `req` just to log.
  *
- * redact matches exact paths only: a secret nested under a path not listed
- * here is NOT hidden.
+ * Request bodies are never logged (see http.ts). redact matches exact paths
+ * only: a secret nested under a path not listed here is NOT hidden.
  */
-export const logger = pino({
+export const loggerOptions: pino.LoggerOptions = {
   level: process.env.LOG_LEVEL ?? (process.env.NODE_ENV === 'test' ? 'silent' : 'info'),
   base: { service: 'invest-api' },
   redact: {
-    paths: [
-      'req.headers.authorization',
-      'req.headers.cookie',
-      'req.body.password',
-      'req.body.refresh_token',
-      'req.body.access_token',
-    ],
+    paths: ['req.headers.authorization', 'req.headers.cookie'],
     censor: '[REDACTED]',
   },
   mixin() {
@@ -36,7 +30,9 @@ export const logger = pino({
       idempotencyKey: ctx?.idempotencyKey,
     };
   },
-});
+};
+
+export const logger = pino(loggerOptions);
 
 /** Nest's own messages as JSON too: its context becomes the `layer` field. */
 export class PinoNestLogger implements LoggerService {

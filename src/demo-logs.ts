@@ -1,6 +1,6 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { run } from './demo-kit';
-import { checkoutBody, LogLine, newIdempotencyKey, runObsDemo, traceparent } from './demo-obs-kit';
+import { checkoutBody, LogLine, runObsDemo, traceparent } from './demo-obs-kit';
 
 /**
  * HW #29 demo:logs — the correlator lives in context, not in arguments.
@@ -22,7 +22,7 @@ run(() =>
     // 1. One request, three layers, one key.
     const one = traceparent();
     const single = await obs.call('POST', '/transactions', {
-      headers: { traceparent: one.header, 'idempotency-key': newIdempotencyKey() },
+      headers: { traceparent: one.header, 'idempotency-key': randomUUID() },
       body: checkoutBody(obs.accountId),
     });
     if (single.status !== 201) throw new Error(`checkout failed: ${single.status} ${single.text}`);
@@ -36,7 +36,7 @@ run(() =>
     const singleTraceIds = new Set(window.map((l) => l.trace_id));
 
     // 2. Burst: N identical requests in parallel, own traceparent + key each.
-    const sent = Array.from({ length: BURST }, () => ({ tp: traceparent(), key: newIdempotencyKey() }));
+    const sent = Array.from({ length: BURST }, () => ({ tp: traceparent(), key: randomUUID() }));
     const replies = await Promise.all(
       sent.map(({ tp, key }) =>
         obs.call('POST', '/transactions', {

@@ -3247,7 +3247,7 @@ docker compose -f observability/compose.yaml down -v
 | Файл | Роль |
 |---|---|
 | [`src/observability/otel.ts`](src/observability/otel.ts) | `NodeSDK`: OTLP/HTTP-експортер, інструментування http / express / pg, W3C traceparent. Перший рядок [`src/main.ts`](src/main.ts) |
-| [`src/observability/logger.ts`](src/observability/logger.ts) | pino у stdout: `mixin` дописує `trace_id`/`span_id` активного спана і `userId`/`tenant`/`idempotencyKey` з ALS; `redact`; Nest-логер теж іде в JSON |
+| [`src/observability/logger.ts`](src/observability/logger.ts) | pino у stdout: `mixin` дописує `trace_id`/`span_id` активного спана і `userId`/`tenant`/`idempotencyKey` з ALS; `redact` заголовків; Nest-логер теж іде в JSON |
 | [`src/observability/context.ts`](src/observability/context.ts) | `AsyncLocalStorage` запиту + перемикач демо-збою |
 | [`src/observability/http.ts`](src/observability/http.ts) | middleware: відкриває ALS-контекст, пише рядок `request completed` (слухач `finish` через `AsyncResource.bind`) |
 | [`src/observability/metrics.ts`](src/observability/metrics.ts) | prom-client: `http_requests_total` + `http_request_duration_seconds`, `GET /metrics` |
@@ -3258,9 +3258,11 @@ docker compose -f observability/compose.yaml down -v
 (`logger.child({ layer })`). Жодна функція не приймає `req` заради логування. `userId` кладе в ALS
 `JwtStrategy.validate`, ключ ідемпотентності й tenant (`x-tenant-id`, інакше `default`) кладе middleware.
 
-Redaction: `req.headers.authorization`, `req.headers.cookie`, `req.body.password`, `req.body.refresh_token`,
-`req.body.access_token` → `[REDACTED]`. pino ховає лише точні шляхи: секрет, вкладений під шляхом, якого
-немає в списку, у лог потрапить. Тому рядок `request completed` пише тіло й заголовки під відомими ключами `req.*`.
+Redaction: тіла запитів у лог не пишуться взагалі. Тож тіло `/auth/login` (email, пароль), refresh-токен
+і деталі транзакцій туди не потрапляють. Заголовки `req.headers.authorization` і `req.headers.cookie` →
+`[REDACTED]`. pino ховає лише точні шляхи: секрет, вкладений під шляхом, якого немає в списку, у лог
+потрапить. Тому рядок `request completed` пише заголовки під відомим ключем `req.headers`, а тест
+[`observability.e2e-spec.ts`](test/e2e/observability.e2e-spec.ts) у CI ловить, якщо це зламається.
 
 Детермінований 5xx для демо: заголовок `x-fault: 1` спрацьовує лише при `FAULT_INJECTION=1` (за
 замовчуванням `0`, демо вмикають його своєму дочірньому процесу). Прапорець їде в ALS, і кидає репозиторій

@@ -1,6 +1,6 @@
 import './register-aliases';
 import { ChildProcess, spawn } from 'node:child_process';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { DataSource } from 'typeorm';
@@ -61,10 +61,6 @@ export function checkoutBody(accountId: string): unknown {
       { account_id: accountId, type: 'expense', amount_cents: 4599, currency: 'UAH', booked_at: '2026-08-25T10:00:00.000Z' },
     ],
   };
-}
-
-export function newIdempotencyKey(): string {
-  return randomUUID();
 }
 
 function startService(): { child: ChildProcess; stdout: string[] } {

@@ -1,5 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import { run, waitFor } from './demo-kit';
-import { checkoutBody, newIdempotencyKey, runObsDemo, traceparent } from './demo-obs-kit';
+import { checkoutBody, runObsDemo, traceparent } from './demo-obs-kit';
 
 /**
  * HW #29 demo:trace — one key opens two doors. A checkout carrying our own
@@ -24,7 +25,7 @@ run(() =>
 
     const tp = traceparent();
     const reply = await obs.call('POST', '/transactions', {
-      headers: { traceparent: tp.header, 'idempotency-key': newIdempotencyKey(), 'x-fault': '1' },
+      headers: { traceparent: tp.header, 'idempotency-key': randomUUID(), 'x-fault': '1' },
       body: checkoutBody(obs.accountId),
     });
     await obs.completed(tp.traceId);

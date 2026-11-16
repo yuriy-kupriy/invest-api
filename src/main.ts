@@ -29,19 +29,15 @@ async function bootstrap(): Promise<void> {
   const port = config.get('PORT', { infer: true });
   setupSwagger(app, port);
 
-  // Without hooks a signal kills the process outright: onModuleDestroy never
-  // runs, so pg.Pool.end() never drains. SIGINT keeps Nest's immediate close;
-  // SIGTERM (what Kubernetes sends) gets the drain below instead.
-  app.enableShutdownHooks(['SIGINT']);
-
-  // Order matters (HW #28): readiness goes red first, the Service drops the pod
-  // from its endpoints while we keep serving, and only then the socket closes.
-  // close() right away would refuse connections kube-proxy is still routing here.
+  // Both signals go through app.close() (onModuleDestroy drains pg.Pool) and
+  // then otelSdk.shutdown(), which ships the spans still sitting in the batch —
+  // Nest's own enableShutdownHooks would re-kill the process before that flush.
+  // Order matters (HW #28): on SIGTERM readiness goes red first, the Service
+  // drops the pod from its endpoints while we keep serving, and only then the
+  // socket closes. SIGINT (Ctrl+C) skips the drain.
   const drainMs = config.get('DRAIN_MS', { infer: true });
-  process.once('SIGTERM', () => {
-    readiness.draining = true;
-    logger.info(`SIGTERM: readiness red, draining ${drainMs} ms before close`);
-    sleep(drainMs)
+  const shutdown = (waitMs: number) => () => {
+    sleep(waitMs)
       .then(() => app.close())
       .then(() => otelSdk.shutdown())
       .then(() => process.exit(0))
@@ -49,6 +45,12 @@ async function bootstrap(): Promise<void> {
         logger.error(error);
         process.exit(1);
       });
+  };
+  process.once('SIGINT', shutdown(0));
+  process.once('SIGTERM', () => {
+    readiness.draining = true;
+    logger.info(`SIGTERM: readiness red, draining ${drainMs} ms before close`);
+    shutdown(drainMs)();
   });
 
   // Stand-in for real warmup (migrations, pool): a pod that answered instantly
