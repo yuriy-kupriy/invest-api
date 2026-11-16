@@ -37,7 +37,7 @@ export interface Http {
   refresh(refreshToken: string): Promise<Reply>;
 }
 
-async function reset(ds: DataSource): Promise<void> {
+export async function reset(ds: DataSource): Promise<void> {
   await ds.query(
     `INSERT INTO currency (code, numeric_code, exponent, name) VALUES ('UAH', 980, 2, 'Ukrainian hryvnia')
      ON CONFLICT DO NOTHING`,

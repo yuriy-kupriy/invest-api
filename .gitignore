@@ -24,3 +24,9 @@ backups/*
 .DS_Store
 *.log
 graphify-out/
+
+# HW #28: BuildKit build secret, local Pulumi backend and per-stack config
+.npm_token
+.pulumi/
+infra/Pulumi.*.yaml
+infra/node_modules/

@@ -704,6 +704,29 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /health/ready:
+    get:
+      operationId: trafficReadinessProbe
+      security: []
+      summary: Traffic readiness probe
+      description: >
+        The Kubernetes readinessProbe. 200 while the process accepts traffic,
+        503 from the moment SIGTERM arrives until the socket closes after the
+        drain, so the pod leaves the Service endpoints before it stops listening.
+        Deliberately not the liveness path.
+      tags: [health]
+      responses:
+        '200':
+          description: The process accepts traffic
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /health/db:
     get:
       operationId: databaseReadinessProbe

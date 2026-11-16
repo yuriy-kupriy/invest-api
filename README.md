@@ -519,7 +519,7 @@ FORCE=1 npm run secrets:init
 
 - `.gitignore` — `.env` і вся тека `secrets/`; у git лежить лише `.env.example`.
 - [`.dockerignore`](.dockerignore) — `.env*`, `secrets/`, `node_modules`, `dist`, `.git`, `.idea`.
-- [`Dockerfile`](Dockerfile) — single-stage, **без жодної інструкції `ENV`**: усе, що покаже
+- [`docker/Dockerfile`](docker/Dockerfile) — на ДЗ #2 був single-stage (з ДЗ #28 — multi-stage + distroless), **без жодної інструкції `ENV`**: усе, що покаже
   `docker inspect --format '{{.Config.Env}}'`, належить базовому образу. Конфіг приходить у
   рантаймі (`--env-file`), секрет — томом.
 
@@ -544,7 +544,7 @@ docker history --no-trunc myapp | grep -i password      # порожньо
 | `scripts/init-secret.sh` | стартовий пароль у `secrets/db_password` |
 | `rotate.sh` | ротація: ALTER ROLE → файл → `pg_terminate_backend` |
 | `docker-compose.yml`, `db/init.sql` | Postgres, роль `invest_app`, таблиця `health_probe` |
-| `Dockerfile`, `.dockerignore` | образ без секретів і без власних `ENV` |
+| `docker/Dockerfile`, `.dockerignore` | образ без секретів і без власних `ENV` |
 
 
 ---
@@ -2970,3 +2970,375 @@ expired=403                                                                inval
 | [`src/files/edge.ts`](src/files/edge.ts), [`assets.ts`](src/files/assets.ts) | кеш-шар перед приватним бакетом; публікація з хешем в імені |
 | [`src/migrations/1790300000000-Files.ts`](src/migrations/1790300000000-Files.ts) | таблиця `files` |
 | `src/demo-{upload,multipart,cdn}.ts`, [`src/files/demo-files-kit.ts`](src/files/demo-files-kit.ts) | три самоперевірні демо |
+
+---
+
+# ДЗ #28 курсового: Kubernetes — distroless-образ, Pulumi, rolling update без жодної втраченої відповіді
+
+Курсовий застосунок (той самий Nest, `dist/main.js`) разом із Postgres їде в локальний кластер kind.
+Усе, що потрапляє в кластер, описує типізована Pulumi-програма [`infra/index.ts`](infra/index.ts).
+Головне твердження ДЗ — «викочування під навантаженням не втрачає жодного запиту» — доводиться
+числом із [`demo/rollout.sh`](demo/rollout.sh), а не заявляється.
+
+## Grading
+
+Немає доступу до сховища → `SKIP_VAULT=1`, значення — `export`-ом. Імена — ті самі, що в таблиці
+змінних нижче. `DB_URL` задає роль і базу. Адресу програма підміняє на внутрішньокластерний `postgres:5432`,
+тож хост у ньому може бути будь-яким.
+
+```bash
+export SKIP_VAULT=1            # у грейдера немає доступу до сховища
+export DB_URL=postgres://invest_app@db.example.invalid:6432/invest
+export DB_PASSWORD=hw28-grader-db-password
+# одноразова пара ES256 для прогону; PEM їде в base64 (як у ДЗ #24)
+node -e 'const {generateKeyPairSync}=require("node:crypto");
+const k=generateKeyPairSync("ec",{namedCurve:"P-256",
+  privateKeyEncoding:{type:"pkcs8",format:"pem"},
+  publicKeyEncoding:{type:"spki",format:"pem"}});
+const fs=require("node:fs");
+fs.writeFileSync("/tmp/priv.b64",Buffer.from(k.privateKey).toString("base64"));
+fs.writeFileSync("/tmp/pub.b64",Buffer.from(k.publicKey).toString("base64"));'
+export JWT_KID=hw28-grader-kid
+export JWT_PRIVATE_KEY="$(cat /tmp/priv.b64)"
+export JWT_PUBLIC_KEY="$(cat /tmp/pub.b64)"
+export REFRESH_TOKEN_PEPPER=hw28-grader-pepper
+export STORAGE_REGION=eu-hw28-grader-1
+export STORAGE_BUCKET=hw28-grader-files
+export STORAGE_ACCESS_KEY=hw28-grader-access-key
+export STORAGE_SECRET_KEY=hw28-grader-secret-key
+export PULUMI_BACKEND_URL="file://$PWD/.pulumi"
+export PULUMI_CONFIG_PASSPHRASE=hw28-grading
+
+npm --prefix infra ci
+printf 'dummy-npm-token' > .npm_token   # секрет етапу збірки; у git його немає
+npm run image:build            # docker/Dockerfile -> invest-api:hw28
+npm run cluster:up             # kind create + kind load docker-image
+npm run up                     # pulumi up (локальний файловий бекенд, стек dev)
+
+npm run demo:image
+npm run scan                   # робочий поріг; SCAN_MAX=-1 / SCAN_MAX=99999 — для критерію 4
+npm run demo:rollout
+npm run demo:pdb               # disruptionsAllowed читати ДО цього демо
+
+npm run destroy && npm run cluster:down
+```
+
+Що треба знати:
+
+- Namespace `invest`. Deployment, Service, PDB і HPA мають імʼя `invest-api`. Secret — `invest-api-secrets`. NodePort `30080`
+  опубліковано на `127.0.0.1` хоста ([`k8s/kind-config.yaml`](k8s/kind-config.yaml)).
+- `npm run up` сам створює теку бекенду і робить `pulumi stack select --create dev`
+  ([`scripts/pulumi.sh`](scripts/pulumi.sh)). Тому критерій 5 (`cd infra && pulumi preview`) знаходить
+  уже вибраний стек.
+- Значення грейдера унікальні (`hw28-grader-…`). Пошук значення в маніфесті (критерій 10) не дає
+  хибних збігів на коротких рядках.
+- `kind load docker-image` після кожної перезбірки робить `npm run cluster:up`. Він ідемпотентний: кластер
+  створюється лише якщо його ще немає.
+- Не роби `pulumi refresh` на цьому стеку: refresh зʼїдає K8s Secret зі стану, і наступний `up`
+  падає з `already exists`.
+
+## Kubernetes
+
+### Змінні
+
+Програма валідує ці змінні **першою дією**, ще до будь-якого звернення до кластера, і без дефолтів. Без
+будь-якої з них `pulumi preview` / `up` завершується з exit 1 і повідомленням
+`missing vault variable(s): <ІМʼЯ> — …`. Без `PULUMI_CONFIG_PASSPHRASE` падає сам Pulumi і теж називає змінну.
+
+| Змінна | Джерело | Навіщо |
+|---|---|---|
+| `DB_URL` | сховище (#11) | роль і база. Хост:порт програма замінює на `postgres:5432` у кластері |
+| `DB_PASSWORD` | сховище (#11) | пароль Postgres. Їде в K8s Secret: у Postgres через `secretKeyRef`, у застосунок файлом (`DB_PASSWORD_FILE`) |
+| `JWT_KID` | сховище (#11) | `kid` access-токенів (ДЗ #24) |
+| `JWT_PRIVATE_KEY` | сховище (#11) | base64 PEM ключа підпису ES256 |
+| `JWT_PUBLIC_KEY` | сховище (#11) | base64 PEM ключа перевірки |
+| `REFRESH_TOKEN_PEPPER` | сховище (#11) | HMAC-ключ хешів refresh-токенів |
+| `STORAGE_REGION` | сховище (#11) | регіон обʼєктного сховища (ДЗ #26) |
+| `STORAGE_BUCKET` | сховище (#11) | бакет файлів |
+| `STORAGE_ACCESS_KEY` | сховище (#11) | ключ доступу до обʼєктного сховища |
+| `STORAGE_SECRET_KEY` | сховище (#11) | секрет доступу до обʼєктного сховища |
+| `PULUMI_CONFIG_PASSPHRASE` | сховище (#11) | ключ шифрування стану Pulumi |
+| `PULUMI_BACKEND_URL` | оточення | `file://…/.pulumi` — локальний бекенд, без `pulumi login` |
+| `.npm_token` (файл) | локальний файл, не в git | секрет етапу збірки (BuildKit `--secret id=npm_token`) |
+
+Нового env-файлу немає. Значення приїжджають у програму через ту саму обгортку
+[`scripts/with-secrets.sh`](scripts/with-secrets.sh), що з ДЗ #11. Програма кладе їх у Secret `invest-api-secrets`
+полем `data` (base64, а не `stringData`, тож другий `up` дає «unchanged»). Deployment споживає Secret лише
+посиланням: `envFrom.secretRef` плюс том із ключем `DB_PASSWORD` для `DB_PASSWORD_FILE`. Ротація пароля
+без рестарту з ДЗ #2 так і лишилася: pool перечитує файл на кожне нове зʼєднання.
+
+**base64 — не шифрування.** У kind Secret лежить в etcd відкритим текстом: encryption-provider-config
+за замовчуванням не налаштований. «Поклав у Secret» означає «прибрав із git», а не «зашифрував».
+
+**Секрет збірки ≠ секрет рантайму.** BuildKit-секрет живе лише під час `docker build` і захищає *образ*:
+не має доїхати до реєстру. K8s Secret живе в рантаймі й захищає *репозиторій*: не має доїхати до git.
+Обидва потрібні, жоден не замінює іншого.
+
+**Промисловий шлях.** У бойовому кластері значення не проходять через ноутбук і стан Pulumi. External
+Secrets Operator синхронізує їх зі сховища (Infisical/Vault/AWS SM) в K8s Secret за `ExternalSecret`-ресурсом
+і сам оновлює при ротації. Secrets Store CSI Driver монтує їх у под томом прямо зі сховища, і
+K8s Secret може взагалі не створюватися. Оператор у kind я не ставив: за завданням вистачає назвати шлях.
+
+### Кластер: kind, і скільки памʼяті
+
+Підіймав на **kind v0.33.0** (Kubernetes v1.37.0), один вузол, Docker Desktop із **3,84 ГіБ**
+памʼяті (з 1,94 ГіБ стек не вміщався). Вузол kind із Postgres і трьома подами застосунку займає **≈ 1,08 ГіБ**
+(`docker stats`). Обрав kind, а не minikube, бо на 4 ГіБ він стартує швидше й легший. До того ж minikube
+не стартує з `--memory` меншим за 1800 МБ.
+
+### Образ
+
+[`docker/Dockerfile`](docker/Dockerfile) — дві стадії. `node:22-slim` збирає (`npm ci`, `nest build`,
+`npm prune --omit=dev`). Фінальна стадія — `gcr.io/distroless/nodejs22-debian12:nonroot`: без shell,
+`USER 65532:65532` числом. У Deployment стоїть `runAsUser: 65532` + `runAsNonRoot` + `readOnlyRootFilesystem`: kubelet
+імена не резолвить, і `nonroot` дав би `CreateContainerConfigError`. Токен приватного реєстру монтується лише
+в один `RUN --mount=type=secret`. Реєстр — неіснуючий scope `@invest`, тож токен «підключений», але
+нікуди не ходить.
+
+`npm run demo:image` (мій прогін): `stages=2 shell-inside=0 runtime-uid=65532 token-in-history=0
+token-in-config=0 token-in-layers=0`. Детектор перевірено на навмисно поганих образах, і канали не
+перетинаються. `ARG NPM_TOKEN` дає `token-in-history=1` при `token-in-layers=0`. `COPY tok` + `RUN rm tok`
+на `node:22-slim` дає `token-in-history=0` при `token-in-layers=1`, і ще `shell-inside=1` та `runtime-uid=0`.
+`token-in-layers` шукає лише в layer-тарах із `manifest.json` розпакованого `docker save`, а не в
+конфігу, де лежить історія.
+
+### Скан із порогом
+
+[`scripts/scan.sh`](scripts/scan.sh): trivy (CRITICAL,HIGH, лише виправні) пише JSON, node рахує знахідки,
+shell порівнює з `SCAN_MAX`. Мій прогін: `found=30`, з них 7 у `libssl3` бази distroless, решта в
+npm-залежностях (multer, lodash, js-yaml, body-parser, proxy-addr, fast-uri, picomatch). Робочий поріг 30 —
+стеля «не рости», а не обіцянка нуля: база trivy оновлюється щодоби. CI-крок `image-scan` у
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) викликає той самий скрипт.
+`SCAN_MAX=-1` → `gate=fail`, exit 1; `SCAN_MAX=99999` → `gate=pass`, exit 0.
+
+### Проби і дренаж
+
+- `readinessProbe` → `GET /health/ready` (період 1 с, `failureThreshold: 1`). Питання — «чи слати мені трафік».
+  Червоний від першої миті SIGTERM.
+- `livenessProbe` → `GET /health` (період 10 с, 3 спроби). Питання — «чи вбити мене». Під час дренажу
+  лишається зеленим: інакше под, який чесно дренажиться, перезапускався б.
+- [`src/main.ts`](src/main.ts) на SIGTERM робить три кроки по черзі. Спершу `readiness.draining = true`. Потім
+  `DRAIN_MS` = 5000 мс обслуговує далі, поки Service прибирає под з endpoints. Лише після цього `app.close()`.
+  `terminationGracePeriodSeconds: 15` > 5 с дренажу, тож SIGKILL посеред дренажу не прилетить.
+- Прогрів `STARTUP_DELAY_MS=4000` перед `listen()` імітує міграції й пул. Без нього зламаний профіль
+  виглядав би здоровим.
+- Стратегія: `maxUnavailable: 0`, `maxSurge: 1`.
+
+### Rolling update під навантаженням — виміри
+
+[`scripts/load.mjs`](scripts/load.mjs): 16 паралельних циклів, кожен не частіше ніж раз на 20 мс. Кожен
+запит іде новим TCP-зʼєднанням (`agent:false`) на NodePort. Код кожної відповіді пишеться у файл,
+`000` — відповіді не було. Без такого темпу миттєві `connection refused` накручували б тисячі «провалів»
+за секунду. `demo:rollout` міняє `rev` у конфігу стеку, тобто env `REV` у pod-шаблоні: викочування
+запускає саме зміна шаблону. Далі `pulumi up` + `kubectl rollout status`. requests/ok/failed рахуються з файла.
+
+| Профіль | requests | ok | failed | rollout-seconds |
+|---|---|---|---|---|
+| safe | 41 720 | 41 720 | **0** | 40 |
+| safe | 47 153 | 47 153 | **0** | 36 |
+| safe (з темпом 20 мс) | 21 631 | 21 631 | **0** | 36 |
+| safe (з темпом 20 мс) | 20 644 | 20 644 | **0** | 29 |
+| broken (з темпом 20 мс) | 5 240 | 551 | 4 689 (усі `000`) | 6 |
+| broken (з темпом 20 мс) | 5 032 | 706 | 4 326 (усі `000`) | 8 |
+
+Зламаний профіль (`PROFILE=broken npm run demo:rollout`): без readinessProbe, `maxUnavailable: 1`,
+`maxSurge: 0`, grace 1 с, без дренажу. Kubernetes вважає новий под готовим одразу, тож за ~6 с замінює всі
+три старі поди, поки нові ще 4 с прогріваються. Майже все вікно виміру — суцільна відмова зʼєднань,
+тому частка збоїв тут значно більша за «кожен шостий» із лекції: вона залежить від того, скільки вікно
+захоплює після викочування. Безпечний профіль викочується в ~6 разів довше. Це ціна нуля:
+`maxUnavailable: 0` не знімає старий под, поки новий не сказав «готовий», і кожен под ще 5 с дренажиться.
+Після зламаного прогону скрипт повертає кластер у безпечний профіль. Це робить trap на виході, тож
+спрацьовує і тоді, коли прогін упав посередині. Перевірено підставним `kubectl`, який падає.
+
+### PDB
+
+`minAvailable: 2` при `replicas: 3` → `disruptionsAllowed: 1`. `demo:pdb` б'є в Eviction API двічі
+поспіль (через `kubectl proxy` + curl, бо `kubectl create --raw` коду не показує). Мій прогін: `healthy=3
+minAvailable=2 evict-1=201 evict-2=429`. Потім скрипт чекає, поки бюджет відновиться. `minAvailable: 3`
+дав би `disruptionsAllowed: 0`, і жоден `kubectl drain` не пройшов би: вузол неможливо було б оновити.
+Звичайний `kubectl delete pod` PDB не зупиняє: бюджет діє лише на Eviction API.
+
+### `replicas` проти HPA
+
+HPA оголошено (`autoscaling/v2`, 2…5, CPU 70 %). У kind немає metrics-server, тож `TARGETS` показує
+`cpu: <unknown>/70%`, і HPA нічого не масштабує. Тому `spec.replicas: 3` у програмі лишається. У
+бойовому кластері з metrics-server це **конфлікт володіння полем**: у `spec.replicas` пишуть і HPA, і моя
+програма. Провайдер Pulumi застосовує ресурс server-side apply, тож HPA підніме поди до 5, а наступний
+`pulumi up` (навіть заради однієї змінної середовища) поверне 3 або впаде з конфліктом field manager. Посеред
+піку навантаження це зрізало б потужність. Правильна форма там: прибрати `replicas` із програми після першого
+створення або віддати поле HPA через `ignoreChanges: ["spec.replicas"]`.
+
+## Структура ДЗ #28
+
+| Файл | Що робить |
+|---|---|
+| [`docker/Dockerfile`](docker/Dockerfile) | дві стадії, distroless `:nonroot`, BuildKit-секрет |
+| [`infra/index.ts`](infra/index.ts), [`infra/Pulumi.yaml`](infra/Pulumi.yaml) | Namespace, Secret, Postgres, Job міграцій, Deployment, Service, PDB, HPA |
+| [`k8s/kind-config.yaml`](k8s/kind-config.yaml) | один вузол, NodePort 30080 на хост |
+| [`scripts/pulumi.sh`](scripts/pulumi.sh) | локальний файловий бекенд + стек `dev` |
+| [`scripts/scan.sh`](scripts/scan.sh) | trivy → підрахунок → поріг |
+| [`scripts/load.mjs`](scripts/load.mjs) | генератор навантаження, код кожної відповіді у файл |
+| [`demo/image.sh`](demo/image.sh), [`demo/rollout.sh`](demo/rollout.sh), [`demo/pdb.sh`](demo/pdb.sh) | три демо з виміряними числами |
+| [`src/health/readiness.ts`](src/health/readiness.ts), [`src/main.ts`](src/main.ts) | readiness окремо від liveness, прогрів, дренаж на SIGTERM |
+
+---
+
+# ДЗ #29 курсового: обсервабельність — один ключ у логу, у спані й у заголовку
+
+Що о 03:15 віддало 500: береш `trace_id` з рядка логу, відкриваєш трейс у Jaeger, бачиш, на якому
+спані впало. Ключ один, бо корелятор логу — `trace_id` активного спана OpenTelemetry, а не власний uuid.
+
+## Grading
+
+Немає доступу до сховища → `SKIP_VAULT=1`, значення — `export`-ом. Стенд (Postgres, Jaeger, Prometheus,
+Grafana) — окремий compose у [`observability/`](observability/compose.yaml), порти 22900–22999.
+Postgres у ньому живе на tmpfs, а `postgres/postgres` — дев-креденшел цього стенда, не секрет.
+
+```bash
+export SKIP_VAULT=1            # у грейдера немає доступу до сховища
+export GRAFANA_ADMIN_USER=admin
+export GRAFANA_ADMIN_PASSWORD=hw29-grader-grafana
+docker compose -f observability/compose.yaml up -d --wait   # стек спостережуваності + Postgres для демо
+
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:22918   # OTLP/HTTP приймач (Jaeger)
+export TRACE_API_URL=http://127.0.0.1:22904                 # query API Jaeger, його читає demo:trace
+export PROMETHEUS_URL=http://127.0.0.1:22901
+export DB_URL=postgres://postgres@127.0.0.1:22905/invest
+printf 'postgres' > /tmp/hw29-db-password
+export DB_PASSWORD_FILE=/tmp/hw29-db-password
+# одноразова пара ES256 для прогону; PEM їде в base64 (як у ДЗ #24)
+node -e 'const {generateKeyPairSync}=require("node:crypto");
+const k=generateKeyPairSync("ec",{namedCurve:"P-256",
+  privateKeyEncoding:{type:"pkcs8",format:"pem"},
+  publicKeyEncoding:{type:"spki",format:"pem"}});
+const fs=require("node:fs");
+fs.writeFileSync("/tmp/priv.b64",Buffer.from(k.privateKey).toString("base64"));
+fs.writeFileSync("/tmp/pub.b64",Buffer.from(k.publicKey).toString("base64"));'
+export JWT_KID=hw29-grader-kid
+export JWT_PRIVATE_KEY="$(cat /tmp/priv.b64)"
+export JWT_PUBLIC_KEY="$(cat /tmp/pub.b64)"
+export REFRESH_TOKEN_PEPPER=hw29-grader-pepper
+export STORAGE_BUCKET=hw29-grader-files
+export STORAGE_ACCESS_KEY=hw29-grader-access-key
+export STORAGE_SECRET_KEY=hw29-grader-secret-key
+npm ci
+
+npm run demo:logs
+npm run demo:metrics
+npm run demo:trace
+
+docker compose -f observability/compose.yaml down -v
+```
+
+Що треба знати:
+
+- Кожне демо саме збирає проєкт (`npm run build`, тобто `nest build` → tsc), саме мігрує базу й чистить свій
+  стан (демо-користувачі ДЗ #24 видаляються каскадом разом із рахунками й транзакціями), саме піднімає
+  справжній `node dist/main.js` на `127.0.0.1:22910` і гасить його через SIGTERM. Порт 22910 має бути вільним.
+- Prometheus скрейпить `host.docker.internal:22910` (на Linux через `host-gateway`), тож після демо панелі
+  дашборда показують їхній трафік. Grafana: <http://127.0.0.1:22902>, дашборд «invest-api — RED».
+- Локально зі сховищем те саме — `npm run obs:up` (обгортка підтягує `GRAFANA_ADMIN_*`), далі три демо
+  без `export`.
+
+## Observability
+
+### Що де лежить
+
+| Файл | Роль |
+|---|---|
+| [`src/observability/otel.ts`](src/observability/otel.ts) | `NodeSDK`: OTLP/HTTP-експортер, інструментування http / express / pg, W3C traceparent. Перший рядок [`src/main.ts`](src/main.ts) |
+| [`src/observability/logger.ts`](src/observability/logger.ts) | pino у stdout: `mixin` дописує `trace_id`/`span_id` активного спана і `userId`/`tenant`/`idempotencyKey` з ALS; `redact` заголовків; Nest-логер теж іде в JSON |
+| [`src/observability/context.ts`](src/observability/context.ts) | `AsyncLocalStorage` запиту + перемикач демо-збою |
+| [`src/observability/http.ts`](src/observability/http.ts) | middleware: відкриває ALS-контекст, пише рядок `request completed` (слухач `finish` через `AsyncResource.bind`) |
+| [`src/observability/metrics.ts`](src/observability/metrics.ts) | prom-client: `http_requests_total` + `http_request_duration_seconds`, `GET /metrics` |
+| [`observability/`](observability/) | compose стенда, `prometheus.yml`, провіження датасорсів і дашборда, [JSON дашборда](observability/grafana/dashboards/invest-api.json) |
+| [`src/demo-obs-kit.ts`](src/demo-obs-kit.ts), [`demo-logs`](src/demo-logs.ts), [`demo-metrics`](src/demo-metrics.ts), [`demo-trace`](src/demo-trace.ts) | три демо |
+
+Шари одного запиту: `http` → `transactions.controller` → `transactions.service` → `transactions.repo`
+(`logger.child({ layer })`). Жодна функція не приймає `req` заради логування. `userId` кладе в ALS
+`JwtStrategy.validate`, ключ ідемпотентності й tenant (`x-tenant-id`, інакше `default`) кладе middleware.
+
+Redaction: тіла запитів у лог не пишуться взагалі. Тож тіло `/auth/login` (email, пароль), refresh-токен
+і деталі транзакцій туди не потрапляють. Заголовки `req.headers.authorization` і `req.headers.cookie` →
+`[REDACTED]`. pino ховає лише точні шляхи: секрет, вкладений під шляхом, якого немає в списку, у лог
+потрапить. Тому рядок `request completed` пише заголовки під відомим ключем `req.headers`, а тест
+[`observability.e2e-spec.ts`](test/e2e/observability.e2e-spec.ts) у CI ловить, якщо це зламається.
+
+Детермінований 5xx для демо: заголовок `x-fault: 1` спрацьовує лише при `FAULT_INJECTION=1` (за
+замовчуванням `0`, демо вмикають його своєму дочірньому процесу). Прапорець їде в ALS, і кидає репозиторій
+**після** свого запиту до бази. Так трейс має pg-спани, а найглибший шар доводить, що контекст дійшов.
+
+### Змінні
+
+| Змінна | Хто читає | Джерело |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP-експортер у застосунку | сховище (Infisical, `dev`) через `scripts/with-secrets.sh`; у грейдера — `export` |
+| `TRACE_API_URL` | `demo:trace` (query API Jaeger) | сховище / `export` |
+| `PROMETHEUS_URL` | харнес демо: тримає сервіс, доки Prometheus не зробить ще один скрейп, щоб дашборд побачив прогін. Самі числа демо беруть з `/metrics` напряму | сховище / `export` |
+| `GRAFANA_ADMIN_USER`, `GRAFANA_ADMIN_PASSWORD` | контейнер Grafana (`npm run obs:up`) | сховище / `export` |
+| `DB_URL`, `DB_PASSWORD_FILE`, `JWT_*`, `REFRESH_TOKEN_PEPPER`, `STORAGE_*` | застосунок (як у ДЗ #24/#26) | сховище / `export` |
+| `FAULT_INJECTION` | middleware контексту | `.env.example` (`0`); демо ставлять `1` своєму дочірньому процесу |
+| `LOG_LEVEL` | pino | необовʼязкова; дефолт `info`, у тестах `silent` |
+
+Нових env-файлів немає. `FAULT_INJECTION` додано в наявні [`env.schema.ts`](src/config/env.schema.ts)
+і [`.env.example`](.env.example).
+
+### Три панелі — три питання RED
+
+| Панель | Питання | PromQL |
+|---|---|---|
+| Rate | скільки запитів за секунду на кожен маршрут? | `sum by (route) (rate(http_requests_total[1m]))` |
+| Errors | яка частка відповідей — 5xx? | `sum by (route) (rate(http_requests_total{status=~"5.."}[1m])) / sum by (route) (rate(http_requests_total[1m]))` |
+| Duration | скільки чекає повільний запит (p95)? | `histogram_quantile(0.95, sum by (le, route) (rate(http_request_duration_seconds_bucket[1m])))` |
+
+`[1m]`, а не `[5m]`: демо коротке, а Prometheus скрейпить кожні 2 с. Datasource `uid: prometheus`
+провіжениться з [`datasources.yaml`](observability/grafana/provisioning/datasources/datasources.yaml), дашборд —
+з [`dashboards.yaml`](observability/grafana/provisioning/dashboards/dashboards.yaml).
+
+Лейбли: `method`, `route`, `status`. `route` — шаблон Express (`req.route.path`, напр.
+`/transactions/:transaction_id`), для запитів поза роутером — `expressRoute` валідатора OpenAPI, інакше
+`unmatched`. Сирий шлях туди не потрапляє ніколи. `/metrics` у лічильник не входить.
+
+### Межі бакетів
+
+`0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30` секунд.
+
+- Низ (5–100 мс) — звичайні запити: найгірший запит прогону `demo:metrics` (усі маршрути, разом із логіном
+  через scrypt) — **70–86 мс**.
+- Верх (2,5–30 с) — те, що бачимо, коли все погано: пул вичерпано (`DB_CONNECT_TIMEOUT_MS` = 5 с), холодний
+  старт, повільний NBU-запит. Верхній скінченний `le=30` з великим запасом більший за будь-який таймаут на
+  шляху запиту. Тому `histogram_quantile` не впирається в межу й не малює «здорову» лінію в момент аварії.
+  `above-top-bucket=0` у кожному прогоні.
+
+### Власні числа (три прогони поспіль, вивід ідентичний)
+
+| Демо | Вивід (кожен з 3 прогонів) |
+|---|---|
+| `demo:logs` | `non-json-lines=0 layers=4 distinct-trace-ids=1 trace-id-matches-header=1 burst=8 burst-trace-ids=8 burst-group-size=4 burst-uneven=0 secret-req-logged=1 secret-in-logs=0` (97 рядків stdout) |
+| `demo:metrics` | `sent-ok=90 sent-fail=10 counter-delta=100 errors-delta=10 above-top-bucket=0 series-before=5 series-after=5 distinct-ids=100` |
+| `demo:trace` | `status=500 spans=20 orphan-spans=0 trace-matches-header=1 trace-matches-log=1 span-status-error=1` |
+
+Відрізняється між прогонами лише `worst-ms` (86 / 79 / 70).
+
+Як рахуються числа (нічого не друкується «на віру»):
+
+- `burst-*` — групування рядків stdout сервісу за `trace_id`. Група «нерівна», якщо її розмір інший або
+  хоч один її рядок має чужий `idempotencyKey`/`userId`. Модульна змінна «поточного запиту» дає тут > 0.
+- `counter-delta`, `errors-delta`, `series-*`, `above-top-bucket` — з двох скрейпів `/metrics`. Перед
+  `series-before` маршрут прогрітий тими самими результатами, що дасть прогін (404 і 500).
+- `trace-matches-log` — `trace_id` кожного рядка шарів дорівнює `traceID` серверного спана, а його `span_id`
+  є серед спанів, які повернув Jaeger. `orphan-spans` — спани, чий батько не в трейсі й не `parent-id` з заголовка.
+
+Перевірено, що демо ловить поломку. Якщо в `route` підставити сирий `req.path`, `demo:metrics` друкує
+`series-before=5 series-after=105` і падає з кодом 1.
+
+### Памʼять стенда
+
+`docker stats --no-stream`: до підняття — лише kind-кластер ДЗ #28 (`invest-control-plane` ≈ 1,08 GiB).
+Після: Grafana 116 MiB, Postgres 74 MiB, Prometheus 45 MiB, Jaeger 17 MiB, разом **≈ 252 MiB** на старті.
+Після трьох демо — ≈ 294 MiB (Jaeger у памʼяті тримає трейси: 52 MiB). З кластером (≈ 1 GiB) влазить у 3,8 GiB
+Docker Desktop. Годинник: `date +%s` хоста і контейнера збігаються (різниця — час старту `docker run`).
+
+### Не входить
+
+Доставка логів у Loki, алерти, tail-based sampling, Sentry/GlitchTip, другий сервіс (бонуси без балів).

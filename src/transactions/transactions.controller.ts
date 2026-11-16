@@ -17,6 +17,7 @@ import { AuthUser } from '@/auth/auth.types';
 import { CurrentUser, Roles } from '@/auth/decorators';
 import { TransactionBatch, TransactionPage, TransactionResponse } from '@/domain/transaction';
 import { i18n } from '@/i18n/swagger';
+import { logger } from '@/observability/logger';
 import { ProblemDto } from '@/shared/dto/problem.dto';
 import { problemResponse } from '@/shared/openapi';
 import { CreateTransactionsDto } from './dto/create-transactions.dto';
@@ -24,6 +25,8 @@ import { ListTransactionsQueryDto } from './dto/list-transactions-query.dto';
 import { TransactionIdParamDto } from './dto/transaction-id-param.dto';
 import { TransactionBatchDto, TransactionDto, TransactionPageDto } from './dto/transaction.dto';
 import { TransactionsService } from './transactions.service';
+
+const log = logger.child({ layer: 'transactions.controller' });
 
 @ApiTags('transactions')
 @ApiExtraModels(ProblemDto)
@@ -72,6 +75,7 @@ export class TransactionsController {
   @ApiUnprocessableEntityResponse(problemResponse(i18n('transactions.create.unprocessable')))
   @ApiInternalServerErrorResponse(problemResponse(i18n('errors.internal')))
   create(@Body() body: CreateTransactionsDto, @CurrentUser() user: AuthUser): Promise<TransactionBatch> {
+    log.info({ entries: body.entries.length }, 'create transactions');
     return this.transactionsService.create(body, user);
   }
 
@@ -83,6 +87,7 @@ export class TransactionsController {
   @ApiNotFoundResponse(problemResponse(i18n('transactions.get.notFound')))
   @ApiInternalServerErrorResponse(problemResponse(i18n('errors.internal')))
   get(@Param() params: TransactionIdParamDto, @CurrentUser() user: AuthUser): Promise<TransactionResponse> {
+    log.info({ transactionId: params.transaction_id }, 'get transaction');
     return this.transactionsService.getById(params.transaction_id, user);
   }
 }

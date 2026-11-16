@@ -7,6 +7,8 @@ import { fxRateKey } from '@/fx-rates/fx-rate.repository';
 import { FxRatesService } from '@/fx-rates/fx-rates.service';
 import { Currency } from '@/domain/currency';
 import { Transaction, TransactionType } from '@/domain/transaction';
+import { assertNoInjectedFault } from '@/observability/context';
+import { logger } from '@/observability/logger';
 import { CursorPayload } from '@/shared/pagination';
 import { problem } from '@/shared/problem.exception';
 
@@ -24,6 +26,8 @@ function toDomain(entity: TransactionEntity): Transaction {
     instrument_symbol: entity.instrument?.symbol ?? null,
   };
 }
+
+const log = logger.child({ layer: 'transactions.repo' });
 
 @Injectable()
 export class TransactionsRepository {
@@ -47,6 +51,9 @@ export class TransactionsRepository {
       where: { id },
       relations: { instrument: true },
     });
+    // After the await: this line proves the ALS store and the span survived the pg pool.
+    log.info({ transactionId: id, found: Boolean(entity) }, 'transaction lookup done');
+    assertNoInjectedFault();
     return entity ? toDomain(entity) : undefined;
   }
 
@@ -151,6 +158,8 @@ export class TransactionsRepository {
     });
 
     await this.repoFor(manager).createQueryBuilder().insert().into(TransactionEntity).values(rows).execute();
+    log.info({ rows: rows.length }, 'transactions inserted');
+    assertNoInjectedFault();
 
     return transactions;
   }

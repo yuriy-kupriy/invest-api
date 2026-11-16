@@ -1,0 +1,9 @@
+global:
+  scrape_interval: 2s   # a demo lasts seconds; 5 s would miss it
+  evaluation_interval: 2s
+
+scrape_configs:
+  # The app (npm run start with PORT=22910, or any of the demo:* runs).
+  - job_name: invest-api
+    static_configs:
+      - targets: ['host.docker.internal:22910']
