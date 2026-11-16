@@ -92,6 +92,10 @@ export function applyEnv(container: StartedPostgreSqlContainer): void {
   process.env.JWT_PRIVATE_KEY = Buffer.from(keys.privateKey).toString('base64');
   process.env.JWT_PUBLIC_KEY = Buffer.from(keys.publicKey).toString('base64');
   process.env.REFRESH_TOKEN_PEPPER = 'test-pepper';
+  // Boot-only placeholders: these suites never call storage.
+  process.env.STORAGE_ACCESS_KEY = 'test';
+  process.env.STORAGE_SECRET_KEY = 'test';
+  process.env.STORAGE_BUCKET = 'test';
 }
 
 /** A standalone DataSource for schema work and assertions, separate from Nest's. */

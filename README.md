@@ -2780,3 +2780,193 @@ fencing token тут правильний вибір. Якби той самий
 | [`src/redis/rate-limit.ts`](src/redis/rate-limit.ts) | ліміт на спільному сховищі, `429` + `Retry-After` |
 | [`src/redis/queue.ts`](src/redis/queue.ts) | черга `receipt-email`: ретраї, бекоф, опції дедупу |
 | [`src/demo-kit.ts`](src/demo-kit.ts), `src/demo-{cache,session,ratelimit,queue}.ts` | чотири самоперевірні демо |
+
+# ДЗ #26 курсового: файли — presigned, multipart із довантаженням, CDN без інвалідації
+
+Повний шлях файла: прийняти → зберегти → віддати. Три демо доводять три різні тези: байти йдуть
+**повз** наш сервіс (`demo:upload`), multipart — це **відновлення** після обриву (`demo:multipart`),
+оновлення приїжджає під **новим URL** без жодної інвалідації, а сховище закрите для публіки (`demo:cdn`).
+
+## Grading
+
+Немає доступу до сховища → `SKIP_VAULT=1`, значення — `export`-ом. `package.json` у корені репо, `cd` не
+потрібен. Сховище — MinIO у `docker-compose.yml` на порту **22650** (дев-креденшели `hw26user` /
+`hw26secretpass`, той самий статус, що `postgres/postgres`). `demo:upload` і `demo:multipart` піднімають
+справжній застосунок під гардами ДЗ #24, тому потрібні ще база й одноразова пара ES256 — як у ДЗ #24.
+
+```bash
+docker compose up -d --wait
+export DB_URL=postgres://postgres@127.0.0.1:6432/invest
+printf postgres > /tmp/invest-db-password && export DB_PASSWORD_FILE=/tmp/invest-db-password
+
+# одноразова пара ES256 для прогону; PEM їде в base64
+node -e 'const {generateKeyPairSync}=require("node:crypto");
+const k=generateKeyPairSync("ec",{namedCurve:"P-256",
+  privateKeyEncoding:{type:"pkcs8",format:"pem"},
+  publicKeyEncoding:{type:"spki",format:"pem"}});
+const fs=require("node:fs");
+fs.writeFileSync("/tmp/priv.b64",Buffer.from(k.privateKey).toString("base64"));
+fs.writeFileSync("/tmp/pub.b64",Buffer.from(k.publicKey).toString("base64"));'
+export JWT_KID=grader
+export JWT_PRIVATE_KEY="$(cat /tmp/priv.b64)"
+export JWT_PUBLIC_KEY="$(cat /tmp/pub.b64)"
+export REFRESH_TOKEN_PEPPER=grader-pepper
+
+export STORAGE_ENDPOINT=http://127.0.0.1:22650
+export STORAGE_ACCESS_KEY=hw26user
+export STORAGE_SECRET_KEY=hw26secretpass
+export STORAGE_BUCKET=hw26-files
+export SKIP_VAULT=1      # у грейдера немає доступу до сховища
+npm ci
+npx tsc --noEmit
+npm run demo:upload
+npm run demo:multipart
+npm run demo:cdn
+```
+
+`--wait` обовʼязковий: без нього демо стартує раніше, ніж MinIO починає приймати зʼєднання (healthcheck —
+`/minio/health/ready`). Кожне демо саме збирає `dist/`, саме накочує міграції, саме створює бакет, якщо
+його нема, і саме приводить стан до чистого: обриває незавершені multipart-завантаження
+(`ListMultipartUploads` → `AbortMultipartUpload`) і видаляє обʼєкти свого префікса, а демо-користувачі
+пересоздаються (каскад прибирає рядки `files`). Застосунок і edge піднімаються в процесі демо на
+ефемерних портах — ні `EADDRINUSE`, ні процесів-сиріт. Порушений інваріант → `INVARIANT VIOLATED` /
+`FAILED` і exit 1.
+
+Образ MinIO — `pgsty/minio`, закріплений тегом: офіційні `minio/minio` і `quay.io/minio/minio` більше не
+публікуються (pull дає `access denied`). Це той самий сервер (AGPL-форк), API S3 ідентичний.
+
+## Files
+
+### Змінні
+
+| Змінна | Що це | Джерело |
+|---|---|---|
+| `STORAGE_ENDPOINT` | S3 endpoint; порожньо ⇒ справжній AWS S3 (і тоді path-style вимкнено) | dev: compose (`http://127.0.0.1:22650`); prod: не задається |
+| `STORAGE_REGION` | регіон підпису, дефолт `us-east-1` | схема (дефолт) / сховище |
+| `STORAGE_ACCESS_KEY` | ідентифікатор ключа доступу | **сховище секретів (Infisical, ДЗ #11)**; dev: compose |
+| `STORAGE_SECRET_KEY` | секрет ключа доступу — право читати й писати **всі** файли | **сховище секретів**; dev: compose |
+| `STORAGE_BUCKET` | бакет для uploads/ і assets/ | сховище секретів; dev: `hw26-files` |
+| `DB_URL`, `DB_PASSWORD_FILE`, `JWT_*`, `REFRESH_TOKEN_PEPPER` | як у ДЗ #13/#24 | сховище секретів |
+
+Нових env-файлів немає: у [`.env.example`](.env.example) лише порожні плейсхолдери, значення приїжджають
+через [`scripts/with-secrets.sh`](scripts/with-secrets.sh), яким загорнуті всі три `demo:*`. Ключі
+сховища — `STORAGE_*` без дефолтів у zod-схемі ([`src/config/env.schema.ts`](src/config/env.schema.ts)):
+застосунок без них не стартує. У лог іде `file_id` і ключ обʼєкта, **ніколи** presigned URL — він сам є
+носієм доступу до кінця свого строку.
+
+### Двокроковий контракт
+
+`POST /uploads/intent` → клієнт кладе байти напряму у сховище за presigned URL → `POST /uploads/commit`.
+
+- **intent** ([`files.service.ts`](src/files/files.service.ts)) — під гардами ДЗ #24 (`@Roles('member')`),
+  `contentType` перевіряється за allowlist (`png/jpeg/webp/pdf/gzip`), ключ сервер генерує сам:
+  `uploads/{userId}/{uuid}.{ext}`, розширення — з allowlist, не з імені. `filename` у ключ не потрапляє:
+  демо шле `../../etc/passwd` і перевіряє, що в ключі цього нема. У базі зʼявляється рядок `PENDING`
+  (міграція [`1790300000000-Files.ts`](src/migrations/1790300000000-Files.ts): `key, owner_id, status,
+  size, upload_id`). Подвійний тап закриває вже наявний `Idempotency-Key` з ДЗ #22.
+- **commit** — `HeadObject`: нема обʼєкта → `409 object-missing`; розмір не той, що заявлено в intent →
+  `409 size-mismatch`; тільки тоді `COMPLETED`. Для multipart перед цим — `ListParts` → `CompleteMultipartUpload`;
+  якщо попередній commit уже склеїв частини й упав до `UPDATE` (`NoSuchUpload`), рішення ухвалює `HeadObject`,
+  а частини, які S3 відмовляється склеїти (`EntityTooSmall`, `InvalidPart`), — це `409 parts-invalid`, не 500.
+- **parts** (`POST /uploads/parts`) — точка відновлення: сервер питає `ListParts` і підписує URL тільки на
+  відсутні частини.
+
+### Строк presigned — 5 хвилин (PUT), 15 хвилин (частина)
+
+Одиночний PUT — це аватарка або фото товару з форми: клієнт починає завантаження за секунди після
+intent, файл до 10 МіБ навіть на 3G їде менше хвилини. 5 хвилин — запас на повільну мережу без вікна,
+в якому витеклий URL живе довго. Відкликати presigned неможливо (ні `jti`, ні реєстру), тож короткий
+строк — єдина стратегія з ДЗ #24, яка тут працює. Для частин — 15 хвилин на **одну** частину; довгий
+upload не потребує довгого URL, бо `/uploads/parts` видає свіжі на кожне відновлення. Протермінування
+перевірене окремо: URL на 1 с через 2 с дає `403` (`expired=403`). У підпис входить і `Content-Length`: заявив
+1 КБ — 1 МБ тим самим URL не заллєш (`oversize=403`), тож бакет не набивають файлами, які commit однаково відхилить. У проді presigned додатково помирає
+разом з креденшелами ролі (STS — 1 година), тож «7 днів» там все одно не вийшло б.
+
+План для «дати посилання на файл»: `GET /files/:id` → `302` на свіжий presigned GET на хвилину — гард
+працює на кожен запит, сервіс у шляху авторизації, але не в шляху даних. Не реалізовано (поза ДЗ).
+
+### Поріг multipart і розмір частини — пораховані ([`storage.ts`](src/files/storage.ts))
+
+- `partSize = max(5 МіБ, size / 10 000)`, округлено вгору до 1 МіБ. Частин максимум 10 000, тому жорсткі
+  5 МіБ впали б на файлі понад ~49 ГіБ; при нашій межі 50 ГіБ виходить 6 МіБ × 8 534 частини.
+- Поріг = `2 × 5 МіБ` = 10 МіБ: нижче не буває двох повних частин, тобто відновлювати нічого — і один
+  PUT дешевший за Create + N×UploadPart + Complete. Демо-файл 11 МіБ → частини 5 + 5 + 1 МіБ.
+- ETag multipart-обʼєкта — `md5(md5(part1)…md5(partN))-N`, **не** MD5 файла; демо це перевіряє.
+
+### CDN: локальний edge (обрана форма)
+
+[`src/files/edge.ts`](src/files/edge.ts) — ~40 рядків express: `GET /assets/*` бере обʼєкт **своїми**
+креденшелами через SDK, кешує в памʼяті тільки те, що origin позначив `public, max-age`, і віддає з
+`X-Cache: HIT|MISS`. Бакет приватний (без bucket policy): анонімний GET повз edge — `403`. Це і є суть
+OAC: до сховища ходить кеш, а не публіка. `uploads/` через edge не віддається взагалі.
+
+Публікація ассета ([`assets.ts`](src/files/assets.ts)) кладе `app.css` як `assets/app.<sha256:8>.css` з
+`Cache-Control: public, max-age=31536000, immutable` **на самому обʼєкті** — без цього edge нічого не
+кешує (перевірено: `cache-hit=0`). «Деплой» нового вмісту дає нове імʼя; старий запис у кеші лишається і
+нікому не заважає — інвалідацій нуль.
+
+Bucket policy для AWS-варіанту (CloudFront + OAC). `Condition` з `AWS:SourceArn` обовʼязковий — без нього
+читати бакет може **будь-яка** дистрибуція у світі:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowCloudFrontOACReadAssets",
+      "Effect": "Allow",
+      "Principal": { "Service": "cloudfront.amazonaws.com" },
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::hw26-files/assets/*",
+      "Condition": {
+        "StringEquals": {
+          "AWS:SourceArn": "arn:aws:cloudfront::111122223333:distribution/EDFDVBD6EXAMPLE"
+        }
+      }
+    }
+  ]
+}
+```
+
+Плюс Block Public Access увімкнений на бакеті. Приватний контент через CDN (не тільки ассети) — план на
+CloudFront signed URLs / signed cookies: приватний ключ підпису живе у сховищі секретів поряд з
+`STORAGE_SECRET_KEY`, бо він — право видавати доступ до всього приватного контенту дистрибуції.
+
+### Сироти і гігієна бакета
+
+Intent без commit лишає рядок `PENDING`, а можливо, й обʼєкт або незавершений multipart. План — джоба в
+BullMQ (черга з ДЗ #23), що раз на годину бере `PENDING` старші за добу (індекс `files_pending_idx`):
+`AbortMultipartUpload` → `DeleteObject` → видалити рядок. Не реалізовано (не оцінюється). На бакеті —
+lifecycle-правило `AbortIncompleteMultipartUpload: DaysAfterInitiation 7`: незавершений multipart
+тарифікується, хоча обʼєкта нема, а правило «видаляти старше 30 днів» його не чіпає. Список файлів
+користувача — запит у таблицю `files`, не листинг бакета.
+
+### Мої прогони (MinIO RELEASE.2026-08-04, Postgres 16, docker на M-series)
+
+```
+$ npm run demo:upload                 $ npm run demo:multipart (×2)        $ npm run demo:cdn
+intent=200                            head-before-complete=404             direct=403
+key-from-server=1                     resumed-parts=1                      edge-miss=200
+api-alive=0                           complete=200                         edge-hit=200
+put-offline=200                       size-match=1                         cache-hit=1
+commit=200                            etag-multipart=1                     new-name=1
+commit-without-bytes=409                                                   new-url=200
+tampered=403                          etag="ef820af6…-3"                   content-changed=1
+oversize=403                          file-md5=1782657a…                   old-url-still-hit=1
+expired=403                                                                invalidations=0
+```
+
+Перевірено ламанням (кожне дає exit 1): commit без `HeadObject` → `commit-without-bytes=200`;
+`/uploads/parts` без `ListParts` → `resumed-parts=3`; ассет без `Cache-Control` → `cache-hit=0`.
+
+## Структура ДЗ #26
+
+| Файл | Що там |
+|---|---|
+| [`docker-compose.yml`](docker-compose.yml) | `minio` на 22650, дані в tmpfs `size=1g` |
+| [`src/files/storage.ts`](src/files/storage.ts) | S3-клієнт, поріг/розмір частини, presign, `ListParts`, прибирання префікса |
+| [`src/files/files.service.ts`](src/files/files.service.ts), [`files.controller.ts`](src/files/files.controller.ts) | intent / parts / commit |
+| [`src/files/upload-client.ts`](src/files/upload-client.ts) | «браузер»: окремий процес без жодного ключа в env |
+| [`src/files/edge.ts`](src/files/edge.ts), [`assets.ts`](src/files/assets.ts) | кеш-шар перед приватним бакетом; публікація з хешем в імені |
+| [`src/migrations/1790300000000-Files.ts`](src/migrations/1790300000000-Files.ts) | таблиця `files` |
+| `src/demo-{upload,multipart,cdn}.ts`, [`src/files/demo-files-kit.ts`](src/files/demo-files-kit.ts) | три самоперевірні демо |
