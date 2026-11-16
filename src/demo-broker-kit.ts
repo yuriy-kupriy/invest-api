@@ -7,6 +7,8 @@ import { assertTopology, brokerUrl, DLQ, RECEIPTS_QUEUE } from './broker/topolog
 import { checkout, CheckoutOptions, CheckoutSuccess } from './concurrency/checkout';
 import { dataSourceOptions } from './data-source';
 
+export { finish, waitFor } from './demo-kit';
+
 /**
  * Shared plumbing of the HW #19 and HW #22 demos: a clean start, checkout, the
  * consumer and the outbox relay as child processes, the counts, and the
@@ -150,27 +152,3 @@ export async function receiptCount(ds: DataSource): Promise<number> {
   return count;
 }
 
-export async function waitFor(what: string, check: () => boolean | Promise<boolean>, timeoutMs = 15_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!(await check())) {
-    if (Date.now() > deadline) throw new Error(`timed out after ${timeoutMs} ms waiting for: ${what}`);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
-
-/**
- * Prints the summary as key=value lines (the grader's contract) and fails the
- * process if any invariant is broken. `checks` holds a message per broken
- * invariant and `false` for each one that holds.
- */
-export function finish(summary: Record<string, number | string>, checks: (string | false)[]): void {
-  const problems = checks.filter((c): c is string => c !== false);
-  console.log('');
-  for (const [key, value] of Object.entries(summary)) console.log(`${key}=${value}`);
-  if (problems.length > 0) {
-    console.error('\nFAILED:\n  - ' + problems.join('\n  - '));
-    process.exitCode = 1;
-    return;
-  }
-  console.log('\nOK');
-}

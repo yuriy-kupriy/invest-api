@@ -11,6 +11,7 @@ const TITLES: Record<number, string> = {
   [HttpStatus.NOT_FOUND]: 'Resource not found',
   [HttpStatus.CONFLICT]: 'Conflict with resource state',
   [HttpStatus.UNPROCESSABLE_ENTITY]: 'The request body failed validation',
+  [HttpStatus.TOO_MANY_REQUESTS]: 'Too many requests',
   [HttpStatus.INTERNAL_SERVER_ERROR]: 'Internal server error',
   [HttpStatus.SERVICE_UNAVAILABLE]: 'Service temporarily unavailable',
 };
