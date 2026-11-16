@@ -40,12 +40,14 @@ docker save "$IMAGE" -o "$WORK/image.tar"
 mkdir "$WORK/x"
 tar -xf "$WORK/image.tar" -C "$WORK/x"
 hits=0
-# Every file of the saved image: layer tars (gzipped or not), configs, manifests.
-while IFS= read -r -d '' f; do
+# Layer tars only, as listed in manifest.json: the config blob also sits in the
+# save, and it carries the history — already counted by token-in-history.
+while IFS= read -r layer; do
+  f="$WORK/x/$layer"
   if gzip -t "$f" 2>/dev/null; then
     gzip -dc "$f" | grep -qaF -- "$TOKEN" && hits=$((hits + 1))
   else
     grep -qaF -- "$TOKEN" "$f" && hits=$((hits + 1))
   fi
-done < <(find "$WORK/x" -type f -print0)
+done < <(node -e 'for (const m of require(process.argv[1])) for (const l of m.Layers) console.log(l)' "$WORK/x/manifest.json")
 echo "token-in-layers=$hits"

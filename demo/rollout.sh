@@ -20,18 +20,19 @@ pulumi_() { bash scripts/with-secrets.sh dev bash scripts/pulumi.sh "$@"; }
 CODES=$(mktemp)
 LOG=$(mktemp)
 LOAD_PID=''
+# On every exit, failures included: a broken run must never leave the stack on
+# the broken profile, or the next plain `npm run up` deploys it.
 cleanup() {
+  local rc=$?
   [ -n "$LOAD_PID" ] && kill -TERM "$LOAD_PID" 2>/dev/null || true
-  rm -f "$CODES" "$LOG"
-}
-trap cleanup EXIT
-
-restore_safe() {
   if [ "$PROFILE" != safe ]; then
     pulumi_ config set profile safe >/dev/null
-    pulumi_ up --yes --skip-preview >"$LOG" 2>&1 || { cat "$LOG" >&2; exit 1; }
+    pulumi_ up --yes --skip-preview >"$LOG" 2>&1 || { cat "$LOG" >&2; rc=1; }
   fi
+  rm -f "$CODES" "$LOG"
+  exit "$rc"
 }
+trap cleanup EXIT
 
 # Unmeasured: bring the cluster to the profile under test.
 pulumi_ config set profile "$PROFILE" >/dev/null
@@ -73,5 +74,4 @@ echo "rollout-seconds=$rollout_seconds"
 # breakdown of the non-200s, informational
 grep -vx 200 "$CODES" | sort | uniq -c | awk '{print "status-" $2 "=" $1}' || true
 
-restore_safe
 [ "$failed" -eq 0 ]

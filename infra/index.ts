@@ -32,9 +32,9 @@ const vault = Object.fromEntries(VAULT_VARS.map((name) => [name, process.env[nam
 >;
 
 const cfg = new pulumi.Config();
-const image = cfg.require('image');
-const replicas = cfg.requireNumber('replicas');
-const nodePort = cfg.requireNumber('nodePort');
+const image = 'invest-api:hw28'; // what npm run image:build tags and cluster:up loads
+const replicas = 3;
+const nodePort = 30080; // also in k8s/kind-config.yaml and the demos
 const rev = cfg.require('rev');
 const profile = cfg.require('profile');
 if (profile !== 'safe' && profile !== 'broken') {

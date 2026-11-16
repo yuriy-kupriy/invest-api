@@ -3096,9 +3096,11 @@ K8s Secret може взагалі не створюватися. Операто
 нікуди не ходить.
 
 `npm run demo:image` (мій прогін): `stages=2 shell-inside=0 runtime-uid=65532 token-in-history=0
-token-in-config=0 token-in-layers=0`. Детектор перевірено на навмисно поганих образах. `ARG NPM_TOKEN` дає
-`token-in-history=1`. `COPY tok` + `RUN rm tok` на `node:22-slim` дає `token-in-layers=1`, і ще `shell-inside=1`
-та `runtime-uid=0`.
+token-in-config=0 token-in-layers=0`. Детектор перевірено на навмисно поганих образах, і канали не
+перетинаються. `ARG NPM_TOKEN` дає `token-in-history=1` при `token-in-layers=0`. `COPY tok` + `RUN rm tok`
+на `node:22-slim` дає `token-in-history=0` при `token-in-layers=1`, і ще `shell-inside=1` та `runtime-uid=0`.
+`token-in-layers` шукає лише в layer-тарах із `manifest.json` розпакованого `docker save`, а не в
+конфігу, де лежить історія.
 
 ### Скан із порогом
 
@@ -3135,7 +3137,9 @@ npm-залежностях (multer, lodash, js-yaml, body-parser, proxy-addr, fa
 | safe | 41 720 | 41 720 | **0** | 40 |
 | safe | 47 153 | 47 153 | **0** | 36 |
 | safe (з темпом 20 мс) | 21 631 | 21 631 | **0** | 36 |
+| safe (з темпом 20 мс) | 20 644 | 20 644 | **0** | 29 |
 | broken (з темпом 20 мс) | 5 240 | 551 | 4 689 (усі `000`) | 6 |
+| broken (з темпом 20 мс) | 5 032 | 706 | 4 326 (усі `000`) | 8 |
 
 Зламаний профіль (`PROFILE=broken npm run demo:rollout`): без readinessProbe, `maxUnavailable: 1`,
 `maxSurge: 0`, grace 1 с, без дренажу. Kubernetes вважає новий под готовим одразу, тож за ~6 с замінює всі
@@ -3143,7 +3147,8 @@ npm-залежностях (multer, lodash, js-yaml, body-parser, proxy-addr, fa
 тому частка збоїв тут значно більша за «кожен шостий» із лекції: вона залежить від того, скільки вікно
 захоплює після викочування. Безпечний профіль викочується в ~6 разів довше. Це ціна нуля:
 `maxUnavailable: 0` не знімає старий под, поки новий не сказав «готовий», і кожен под ще 5 с дренажиться.
-Після зламаного прогону скрипт повертає кластер у безпечний профіль.
+Після зламаного прогону скрипт повертає кластер у безпечний профіль. Це робить trap на виході, тож
+спрацьовує і тоді, коли прогін упав посередині. Перевірено підставним `kubectl`, який падає.
 
 ### PDB
 

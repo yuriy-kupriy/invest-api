@@ -37,7 +37,9 @@ evict() {
 echo "evict-1=$(evict "${PODS[0]}")"
 echo "evict-2=$(evict "${PODS[1]}")"
 
-# Leave the cluster as found: wait until the budget is back.
+# Leave the cluster as found: the evicted pod gone (a terminating pod still has
+# phase Running, and evicting it does not consume budget) and the budget back.
+kubectl -n "$NS" wait --for=delete "pod/${PODS[0]}" --timeout=60s >/dev/null
 for _ in $(seq 120); do
   [ "$(pdb .status.disruptionsAllowed)" -ge 1 ] 2>/dev/null && break
   sleep 1

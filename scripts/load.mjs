@@ -31,8 +31,8 @@ function once() {
   return new Promise((resolve) => {
     const req = http.get(url, { agent: false, timeout: TIMEOUT_MS }, (res) => {
       res.resume();
-      res.on('end', () => resolve(String(res.statusCode)));
-      res.on('error', () => resolve('000'));
+      // 'close' fires on every path; a body cut off mid-way is no answer at all.
+      res.on('close', () => resolve(res.complete ? String(res.statusCode) : '000'));
     });
     req.on('timeout', () => req.destroy(new Error('timeout')));
     req.on('error', () => resolve('000'));

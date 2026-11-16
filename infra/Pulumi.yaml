@@ -8,12 +8,6 @@ runtime:
 # carry the encryptionsalt of MY passphrase, and the grader's would not match.
 # `pulumi config set` (used by demo:rollout) writes the gitignored stack file.
 config:
-  invest-api-k8s:image:
-    value: invest-api:hw28
-  invest-api-k8s:replicas:
-    value: 3
-  invest-api-k8s:nodePort:
-    value: 30080
   # safe | broken — broken drops readiness, drain and maxUnavailable: 0 (demo only)
   invest-api-k8s:profile:
     value: safe
