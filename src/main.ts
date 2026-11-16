@@ -1,3 +1,5 @@
+// HW #29: tracing first — instrumentations only patch modules loaded after it.
+import { otelSdk } from './observability/otel';
 import 'reflect-metadata';
 import './register-aliases';
 import { existsSync } from 'node:fs';
@@ -5,6 +7,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import type { Env } from '@/config/env.schema';
 import { validateEnv } from '@/config/env.validation';
 import { readiness } from '@/health/readiness';
+import { logger } from '@/observability/logger';
 
 async function bootstrap(): Promise<void> {
   // Config is validated before anything else is even loaded: src/data-source.ts
@@ -37,12 +40,13 @@ async function bootstrap(): Promise<void> {
   const drainMs = config.get('DRAIN_MS', { infer: true });
   process.once('SIGTERM', () => {
     readiness.draining = true;
-    console.log(`SIGTERM: readiness red, draining ${drainMs} ms before close`);
+    logger.info(`SIGTERM: readiness red, draining ${drainMs} ms before close`);
     sleep(drainMs)
       .then(() => app.close())
+      .then(() => otelSdk.shutdown())
       .then(() => process.exit(0))
       .catch((error: unknown) => {
-        console.error(error);
+        logger.error(error);
         process.exit(1);
       });
   });
@@ -52,11 +56,11 @@ async function bootstrap(): Promise<void> {
   await sleep(config.get('STARTUP_DELAY_MS', { infer: true }));
 
   await app.listen(port);
-  console.log(`invest-api listening on http://localhost:${port}`);
-  console.log(`Swagger UI: http://localhost:${port}/docs · JSON: /docs-json`);
-  console.log(`Swagger UI (uk): http://localhost:${port}/docs/uk · JSON: /docs-json/uk`);
+  logger.info(`invest-api listening on http://localhost:${port}`);
+  logger.info(`Swagger UI: http://localhost:${port}/docs · JSON: /docs-json`);
+  logger.info(`Swagger UI (uk): http://localhost:${port}/docs/uk · JSON: /docs-json/uk`);
   if (config.get('DRIFT', { infer: true }) === '1') {
-    console.log('DRIFT=1 — the transaction mapper deliberately emits amountCents instead of amount_cents');
+    logger.info('DRIFT=1 — the transaction mapper deliberately emits amountCents instead of amount_cents');
   }
 }
 

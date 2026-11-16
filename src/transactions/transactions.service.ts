@@ -14,6 +14,7 @@ import {
   TransactionResponse,
   TransactionType,
 } from '@/domain/transaction';
+import { logger } from '@/observability/logger';
 import { toTransaction } from '@/shared/mappers';
 import { decodeCursor, encodeCursor } from '@/shared/pagination';
 import { problem } from '@/shared/problem.exception';
@@ -28,6 +29,8 @@ export const SIGN: Record<TransactionType, 1 | -1> = {
   transfer_out: -1,
   buy: -1,
 };
+
+const log = logger.child({ layer: 'transactions.service' });
 
 @Injectable()
 export class TransactionsService {
@@ -86,6 +89,7 @@ export class TransactionsService {
    */
   async create(input: CreateTransactionsDto, user: AuthUser): Promise<TransactionBatch> {
     const now = new Date().toISOString();
+    log.info({ entries: input.entries.length }, 'booking batch in one DB transaction');
 
     const created = await this.dataSource.transaction(async (manager) => {
       const accountIds = [...new Set(input.entries.map((entry) => entry.account_id))];
@@ -158,6 +162,7 @@ export class TransactionsService {
   }
 
   async getById(transactionId: string, user: AuthUser): Promise<TransactionResponse> {
+    log.info({ transactionId }, 'loading transaction');
     const tx = await this.transactionsRepo.findById(transactionId);
     if (!tx) {
       throw problem(

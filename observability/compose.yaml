@@ -1,0 +1,71 @@
+# HW #29 observability stand: traces (Jaeger), metrics (Prometheus), dashboards
+# (Grafana) + a throwaway Postgres for the demos. Separate from the root
+# docker-compose.yml so it does not drag pact-broker / rabbit / minio along.
+# Ports live in 22900–22999 so they never collide with earlier stands.
+name: invest-observability
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: invest
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - '127.0.0.1:22905:5432'
+    volumes:
+      - ../db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d invest']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Jaeger v2: OTLP in, in-memory storage, query API /api/traces/{id}. The image
+  # has no shell, so no healthcheck — `--wait` waits for it to be running.
+  jaeger:
+    image: jaegertracing/jaeger:2.11.0
+    ports:
+      - '127.0.0.1:22918:4318'   # OTLP/HTTP  -> OTEL_EXPORTER_OTLP_ENDPOINT
+      - '127.0.0.1:22904:16686'  # UI + query API -> TRACE_API_URL
+
+  prometheus:
+    image: prom/prometheus:v3.7.3
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=2d
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    # The app runs on the host; host-gateway makes this name work on Linux too.
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    ports:
+      - '127.0.0.1:22901:9090'
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:9090/-/ready']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  grafana:
+    image: grafana/grafana:12.2.1
+    environment:
+      # From the vault via scripts/with-secrets.sh (or export with SKIP_VAULT=1).
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:?set GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_DEFAULT_THEME: light
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - '127.0.0.1:22902:3000'
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3000/api/health']
+      interval: 2s
+      timeout: 3s
+      retries: 60
