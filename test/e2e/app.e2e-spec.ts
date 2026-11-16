@@ -5,6 +5,7 @@ import request from 'supertest';
 import { DataSource } from 'typeorm';
 import { hashPassword } from '@/auth/password';
 import { createApp } from '@/create-app';
+import { readiness } from '@/health/readiness';
 
 /**
  * Boots the real request pipeline — OpenApiValidator (request + response) →
@@ -255,6 +256,21 @@ describe('invest-api (e2e)', () => {
     // which is what keeps /health honest about its own shape.
     expect(typeof res.body.uptime_seconds).toBe('number');
     expect(res.body.node_env).toBe('test');
+  });
+
+  it('turns /health/ready red while draining, and leaves liveness green', async () => {
+    expect((await api().get('/health/ready')).status).toBe(200);
+
+    readiness.draining = true;
+    try {
+      const ready = await api().get('/health/ready');
+      expect(ready.status).toBe(503);
+      expect(ready.headers['content-type']).toContain('application/problem+json');
+      // Not ready must never read as "kill me".
+      expect((await api().get('/health')).status).toBe(200);
+    } finally {
+      readiness.draining = false;
+    }
   });
 
   it('answers 401, not 403, for a protected route without a token', async () => {

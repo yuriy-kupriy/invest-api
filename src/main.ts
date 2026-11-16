@@ -1,8 +1,10 @@
 import 'reflect-metadata';
 import './register-aliases';
 import { existsSync } from 'node:fs';
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { Env } from '@/config/env.schema';
 import { validateEnv } from '@/config/env.validation';
+import { readiness } from '@/health/readiness';
 
 async function bootstrap(): Promise<void> {
   // Config is validated before anything else is even loaded: src/data-source.ts
@@ -24,9 +26,30 @@ async function bootstrap(): Promise<void> {
   const port = config.get('PORT', { infer: true });
   setupSwagger(app, port);
 
-  // Without this SIGTERM kills the process outright: onModuleDestroy never runs,
-  // so pg.Pool.end() never drains and Postgres keeps the abandoned backends.
-  app.enableShutdownHooks();
+  // Without hooks a signal kills the process outright: onModuleDestroy never
+  // runs, so pg.Pool.end() never drains. SIGINT keeps Nest's immediate close;
+  // SIGTERM (what Kubernetes sends) gets the drain below instead.
+  app.enableShutdownHooks(['SIGINT']);
+
+  // Order matters (HW #28): readiness goes red first, the Service drops the pod
+  // from its endpoints while we keep serving, and only then the socket closes.
+  // close() right away would refuse connections kube-proxy is still routing here.
+  const drainMs = config.get('DRAIN_MS', { infer: true });
+  process.once('SIGTERM', () => {
+    readiness.draining = true;
+    console.log(`SIGTERM: readiness red, draining ${drainMs} ms before close`);
+    sleep(drainMs)
+      .then(() => app.close())
+      .then(() => process.exit(0))
+      .catch((error: unknown) => {
+        console.error(error);
+        process.exit(1);
+      });
+  });
+
+  // Stand-in for real warmup (migrations, pool): a pod that answered instantly
+  // would hide a broken rollout profile.
+  await sleep(config.get('STARTUP_DELAY_MS', { infer: true }));
 
   await app.listen(port);
   console.log(`invest-api listening on http://localhost:${port}`);

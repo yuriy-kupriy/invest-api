@@ -1,0 +1,14 @@
+{
+  "name": "invest-api-infra",
+  "private": true,
+  "description": "HW #28: everything that goes into the kind cluster, as a typed Pulumi program.",
+  "main": "index.ts",
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@pulumi/kubernetes": "^4.34.3",
+    "@pulumi/pulumi": "^3.276.0"
+  }
+}

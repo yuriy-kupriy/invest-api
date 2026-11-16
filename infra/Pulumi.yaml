@@ -1,0 +1,22 @@
+name: invest-api-k8s
+description: HW #28 — invest-api + Postgres on a local kind cluster
+runtime:
+  name: nodejs
+  options:
+    typescript: true
+# Project-level defaults instead of a committed Pulumi.dev.yaml: that file would
+# carry the encryptionsalt of MY passphrase, and the grader's would not match.
+# `pulumi config set` (used by demo:rollout) writes the gitignored stack file.
+config:
+  invest-api-k8s:image:
+    value: invest-api:hw28
+  invest-api-k8s:replicas:
+    value: 3
+  invest-api-k8s:nodePort:
+    value: 30080
+  # safe | broken — broken drops readiness, drain and maxUnavailable: 0 (demo only)
+  invest-api-k8s:profile:
+    value: safe
+  # Any change here changes the pod template, which is what starts a rollout.
+  invest-api-k8s:rev:
+    value: "1"

@@ -94,3 +94,21 @@ jobs:
       # "deployable": true — "unknown" is not a yes.
       - name: can-i-deploy
         run: bash scripts/can-i-deploy.sh "$CONSUMER" "$PACT_VERSION" prod
+
+  image-scan:
+    name: image + scan gate (HW #28)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # No private registry in CI either: the build secret is a throwaway decoy,
+      # and demo:image proves it reached none of history / config / layers.
+      - name: Build-stage secret (decoy)
+        run: openssl rand -hex 16 > .npm_token
+      - run: npm run image:build
+      - run: npm run demo:image
+      - uses: aquasecurity/setup-trivy@v0.2.2
+        with:
+          version: v0.76.2
+      # The same script the grader runs, with the working threshold (scripts/scan.sh).
+      - name: Scan gate
+        run: npm run scan
