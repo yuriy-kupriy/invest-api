@@ -106,7 +106,7 @@ jobs:
         run: openssl rand -hex 16 > .npm_token
       - run: npm run image:build
       - run: npm run demo:image
-      - uses: aquasecurity/setup-trivy@v0.2.2
+      - uses: aquasecurity/setup-trivy@v0.3.1
         with:
           version: v0.76.2
       # The same script the grader runs, with the working threshold (scripts/scan.sh).
