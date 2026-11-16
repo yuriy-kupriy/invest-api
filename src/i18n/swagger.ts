@@ -231,6 +231,14 @@ const catalog = {
     en: 'Liveness probe',
     uk: 'Перевірка живучості процесу',
   },
+  'health.ready.summary': {
+    en: 'Traffic readiness probe: 503 while the process drains after SIGTERM',
+    uk: 'Готовність приймати трафік: 503, поки процес дренажиться після SIGTERM',
+  },
+  'health.ready.draining': {
+    en: 'The process is draining and must not receive new traffic',
+    uk: 'Процес дренажиться і не має отримувати новий трафік',
+  },
   'health.db.summary': {
     en: 'Database readiness probe',
     uk: 'Перевірка доступності бази даних',

@@ -23,3 +23,13 @@ rotate.sh
 db
 test
 README.md
+
+# HW #28: build secret and everything that describes the cluster, not the app
+.npm_token
+.pulumi
+infra
+k8s
+demo
+docker
+graphify-out
+backups

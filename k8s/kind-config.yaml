@@ -1,0 +1,13 @@
+# HW #28: one node is enough for everything graded here. The NodePort of the
+# invest-api Service is published to the host, so the load generator and the
+# demos reach the pods without kubectl port-forward (which itself would be a
+# single connection-pinned tunnel and hide the rollout).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30080
+        hostPort: 30080
+        listenAddress: 127.0.0.1
+        protocol: TCP

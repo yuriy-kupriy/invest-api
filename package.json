@@ -56,7 +56,16 @@
     "demo:queue": "npm run build && bash scripts/with-secrets.sh dev node dist/demo-queue.js",
     "demo:upload": "npm run build && bash scripts/with-secrets.sh dev node dist/demo-upload.js",
     "demo:multipart": "npm run build && bash scripts/with-secrets.sh dev node dist/demo-multipart.js",
-    "demo:cdn": "npm run build && bash scripts/with-secrets.sh dev node dist/demo-cdn.js"
+    "demo:cdn": "npm run build && bash scripts/with-secrets.sh dev node dist/demo-cdn.js",
+    "image:build": "DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile --secret id=npm_token,src=.npm_token -t invest-api:hw28 .",
+    "scan": "bash scripts/scan.sh",
+    "cluster:up": "bash -c 'kind get clusters 2>/dev/null | grep -qx invest || kind create cluster --name invest --config k8s/kind-config.yaml --wait 120s; kind load docker-image invest-api:hw28 --name invest'",
+    "cluster:down": "kind delete cluster --name invest",
+    "up": "bash scripts/with-secrets.sh dev bash scripts/pulumi.sh up --yes --skip-preview",
+    "destroy": "bash scripts/with-secrets.sh dev bash scripts/pulumi.sh destroy --yes --skip-preview",
+    "demo:image": "bash demo/image.sh",
+    "demo:rollout": "bash demo/rollout.sh",
+    "demo:pdb": "bash demo/pdb.sh"
   },
   "engines": {
     "node": ">=18"
