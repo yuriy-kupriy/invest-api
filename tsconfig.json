@@ -21,5 +21,7 @@
     "strictBindCallApply": true,
     "forceConsistentCasingInFileNames": true,
     "noFallthroughCasesInSwitch": true
-  }
+  },
+  // infra/ is its own TypeScript project with its own node_modules (HW #28)
+  "exclude": ["node_modules", "dist", "infra"]
 }

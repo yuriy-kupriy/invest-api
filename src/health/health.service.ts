@@ -6,6 +6,7 @@ import { PG_POOL } from '@/db/db.module';
 import { problem } from '@/shared/problem.exception';
 import { VERSION } from '@/shared/version';
 import { DbHealthDto, HealthDto } from './dto/health.dto';
+import { readiness } from './readiness';
 
 @Injectable()
 export class HealthService {
@@ -27,6 +28,14 @@ export class HealthService {
       version: VERSION,
       node_env: this.config.get('NODE_ENV', { infer: true }),
     };
+  }
+
+  /** Traffic readiness: red from the first moment of SIGTERM handling. */
+  readiness(): HealthDto {
+    if (readiness.draining) {
+      throw problem(HttpStatus.SERVICE_UNAVAILABLE, 'draining', 'The process is draining');
+    }
+    return this.liveness();
   }
 
   /**

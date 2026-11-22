@@ -29,6 +29,17 @@ export class HealthController {
     return this.healthService.liveness();
   }
 
+  // Separate from liveness on purpose: "do not send me traffic" must never be
+  // read as "kill me", or a draining pod gets restarted mid-drain.
+  @Get('ready')
+  @ApiOperation({ summary: i18n('health.ready.summary') })
+  @ApiOkResponse({ type: HealthDto })
+  @ApiServiceUnavailableResponse(problemResponse(i18n('health.ready.draining')))
+  @ApiInternalServerErrorResponse(problemResponse(i18n('errors.internal')))
+  readiness(): HealthDto {
+    return this.healthService.readiness();
+  }
+
   @Get('db')
   @ApiOperation({ summary: i18n('health.db.summary') })
   @ApiOkResponse({ type: DbHealthDto })
