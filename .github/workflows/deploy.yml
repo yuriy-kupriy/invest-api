@@ -1,0 +1,108 @@
+# HW #32 — deploy. Builds NOTHING: it promotes the digest the PR pipeline built
+# and scanned (build once, promote by digest). On push to main the digest is
+# looked up by the merged PR's head SHA tag; workflow_dispatch can name it.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      digest:
+        description: 'sha256:… to deploy (empty: the image of the PR merged into this commit)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
+env:
+  IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/invest-api
+
+jobs:
+  resolve:
+    name: resolve the digest to promote
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      image-ref: ${{ steps.find.outputs.image-ref }}
+      digest: ${{ steps.find.outputs.digest }}
+    steps:
+      - id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_DIGEST: ${{ inputs.digest }}
+        run: |
+          if [ -n "$INPUT_DIGEST" ]; then
+            ref="$IMAGE_REPO"; digest="$INPUT_DIGEST"
+          else
+            head=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[0].head.sha')
+            [ -n "$head" ] || { echo "no PR merged into $GITHUB_SHA: nothing was built for it" >&2; exit 1; }
+            ref="$IMAGE_REPO:$head"
+            digest=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')
+          fi
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "not a digest: $digest" >&2; exit 1; }
+          echo "image-ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "promote $ref -> $digest"
+
+  oidc:
+    name: OIDC gate (before deploy)
+    needs: resolve
+    runs-on: ubuntu-latest
+    environment: kind
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      iss: ${{ steps.gate.outputs.iss }}
+      aud: ${{ steps.gate.outputs.aud }}
+      sub: ${{ steps.gate.outputs.sub }}
+      sig-verified: ${{ steps.gate.outputs.sig-verified }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: gate
+        uses: ./.github/actions/oidc-gate
+
+  deploy-kind:
+    name: deploy to kind + demo:rollout
+    needs: [resolve, oidc]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - uses: ./.github/actions/kind-deploy
+        with:
+          image: ${{ env.IMAGE_REPO }}@${{ needs.resolve.outputs.digest }}
+          infisical-token: ${{ secrets.INFISICAL_TOKEN }}
+          infisical-project-id: ${{ secrets.INFISICAL_PROJECT_ID }}
+      - name: evidence.txt
+        if: always()
+        env:
+          RUN_ID: ${{ github.run_id }}
+          HEAD_SHA: ${{ github.sha }}
+          IMAGE_REF: ${{ needs.resolve.outputs.image-ref }}
+          BUILT_DIGEST: ${{ needs.resolve.outputs.digest }}
+          SCAN_EXIT: ''
+          OIDC_ISS: ${{ needs.oidc.outputs.iss }}
+          OIDC_AUD: ${{ needs.oidc.outputs.aud }}
+          OIDC_SUB: ${{ needs.oidc.outputs.sub }}
+          OIDC_SIG: ${{ needs.oidc.outputs.sig-verified }}
+        run: |
+          mkdir -p evidence
+          bash scripts/evidence.sh evidence
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pipeline-evidence
+          path: evidence/

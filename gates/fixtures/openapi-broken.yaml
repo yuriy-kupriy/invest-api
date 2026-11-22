@@ -1,0 +1,1333 @@
+# HW #32 demo:gates, step "contract", broken input: openapi/openapi.yaml with
+# GET /currencies/{code} removed — a client already living on v1 gets 404.
+# Regenerate: see scripts/demo-gates.sh. Never served, never bundled.
+openapi: 3.0.3
+
+info:
+  title: Invest API
+  version: 1.0.0
+  description: |
+    Money Manager with detailed investment tracking.
+
+    `Account` and `Transaction` are a single model for cash, bank, brokerage,
+    and property; the kind is an enum, not a separate subsystem.
+
+    Conventions for the whole API:
+
+    - **Money is integer cents.** `amount_cents` and `balance_cents` are `integer`.
+      No floats and no decimal strings such as `"2600.00"`. Currency is always an
+      explicit field (`UAH` / `USD` / `EUR`).
+    - **Instrument quantity is `quantity_micro`**, an integer times 10^6. Fractional
+      shares are not floats either.
+    - **Wire format is `snake_case`.**
+    - **Errors are `application/problem+json`** (RFC 9457) with a single `Problem` schema.
+    - **Pagination is cursor-based.** The cursor is opaque and belongs to the server.
+    - **Time is ISO 8601 UTC** (`format: date-time`).
+
+  contact:
+    name: Yurii Kuprii
+  license:
+    name: UNLICENSED
+
+servers:
+  - url: http://localhost:3000
+    description: Local app with runtime validation against this spec
+
+# Homework #24: every operation needs a Bearer access token (ES256 JWT) unless
+# it overrides this with `security: []`. 401 = no/expired/invalid token,
+# 403 = valid token, but not allowed (wrong role or someone else's resource).
+security:
+  - bearerAuth: []
+
+tags:
+  - name: auth
+    description: Auth — login, refresh-token rotation, logout
+  - name: accounts
+    description: Accounts — cash, bank, brokerage, property
+  - name: transactions
+    description: Transactions — income, expenses, transfers, buy and sell
+  - name: health
+    description: Health — liveness and database readiness
+  - name: fx-rates
+    description: FX rates — currency rate lookups backing transaction snapshots
+  - name: currencies
+    description: Currencies — the ISO 4217 lookup table accounts, transactions, and fx-rates read from
+  - name: uploads
+    description: Uploads — presigned PUT and resumable multipart straight to object storage
+
+paths:
+  /auth/login:
+    post:
+      operationId: login
+      summary: Log in
+      description: >
+        Exchanges email and password for a token pair and starts a new refresh-token
+        family. `access_token` is an ES256 JWT that lives `expires_in` seconds;
+        `refresh_token` is opaque and single-use.
+      tags: [auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Token pair
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /auth/refresh:
+    post:
+      operationId: refreshTokens
+      summary: Rotate the refresh token
+      description: >
+        Spends the refresh token and returns a new pair in the same family. A refresh
+        token presented a second time is treated as stolen: the whole family is
+        revoked and every token in it — including the newest one — stops working.
+        Clients must serialise refreshes: two parallel refreshes of one token look
+        exactly like a replay.
+      tags: [auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: New token pair
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /auth/logout:
+    post:
+      operationId: logout
+      summary: Log out
+      description: >
+        Revokes the refresh-token family of this session and denylists the presented
+        access token until its `exp`. Both happen in one database transaction.
+      tags: [auth]
+      responses:
+        '204':
+          description: Logged out
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /accounts:
+    get:
+      operationId: listAccounts
+      summary: List accounts
+      description: Returns a page of accounts sorted by `created_at DESC, id DESC`.
+      tags: [accounts]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: How many accounts to return on one page.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: cursor
+          in: query
+          required: false
+          description: >
+            Opaque next-page token issued by the server in `next_cursor`.
+            Clients must not parse or construct it: the internal structure belongs
+            to the server and may change without notice. The only correct use is
+            to send back exactly the value from the previous response.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 512
+      responses:
+        '200':
+          description: Account page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      operationId: createAccount
+      summary: Create account
+      description: >
+        Creates an account with a zero or given opening balance.
+        Returns `201` with a `Location` header pointing at the created resource.
+      tags: [accounts]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountCreate'
+      responses:
+        '201':
+          description: Account created
+          headers:
+            Location:
+              description: URI of the created account
+              schema:
+                type: string
+                format: uri-reference
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /accounts/{account_id}:
+    get:
+      operationId: getAccount
+      summary: Get account
+      tags: [accounts]
+      parameters:
+        - name: account_id
+          in: path
+          required: true
+          description: Account identifier.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /transactions:
+    get:
+      operationId: listTransactions
+      summary: List transactions
+      description: >
+        Returns a page of transactions sorted by `booked_at DESC, id DESC`.
+        Optional `account_id` filter narrows the result to one account.
+      tags: [transactions]
+      parameters:
+        - name: account_id
+          in: query
+          required: false
+          description: Show transactions for this account only.
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          description: How many transactions to return on one page.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: cursor
+          in: query
+          required: false
+          description: >
+            Opaque next-page token issued by the server in `next_cursor`.
+            Clients must not parse or construct it: the internal structure belongs
+            to the server and may change without notice. The only correct use is
+            to send back exactly the value from the previous response.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 512
+      responses:
+        '200':
+          description: Transaction page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      operationId: createTransactions
+      summary: Create transactions as a batch
+      description: >
+        Creates one or more transactions in a single request — manual entry, statement
+        import, or a transfer between own accounts (`transfer_out` + `transfer_in` as
+        two items). The batch is applied atomically: either every `entries` row is
+        created, or none. Account balances are updated in the same operation.
+      tags: [transactions]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: >
+            Safe-retry key. The same key with the same body returns the same response —
+            the same `201` and the same set of transactions, plus `Idempotency-Replay: true`;
+            the handler does not run again and no new rows appear. The same key with a
+            different body yields `422`, because the key was already spent on another
+            operation. A request still in flight yields `409`. The key lives 24 hours,
+            after which the same string may be used as new. There is no standard for this
+            header: IETF draft `draft-ietf-httpapi-idempotency-key-header` stopped at
+            revision -07 and expired, so the semantics are spelled out here and follow Stripe.
+          schema:
+            type: string
+            minLength: 8
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTransactionsRequest'
+      responses:
+        '201':
+          description: Transactions created
+          headers:
+            Idempotency-Replay:
+              description: >
+                Present with value `true` when this is a replay of a request with the
+                same `Idempotency-Key` and the same body. No new transactions are created.
+              required: false
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionBatch'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /transactions/{transaction_id}:
+    get:
+      operationId: getTransaction
+      summary: Get transaction
+      tags: [transactions]
+      parameters:
+        - name: transaction_id
+          in: path
+          required: true
+          description: Transaction identifier.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Transaction
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /orders/{order_id}/status:
+    patch:
+      operationId: changeOrderStatus
+      summary: Change order status
+      description: |
+        An order is a transactions row. Row lock, ownership check, status write
+        and balance correction run in one DB transaction; after COMMIT an
+        `order.status` event goes to the WS room `orders:<id>` and the SSE stream.
+        Setting the current status again is a no-op without an event.
+      tags: [orders]
+      parameters:
+        - $ref: '#/components/parameters/OrderId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [status]
+              properties:
+                status:
+                  $ref: '#/components/schemas/TransactionStatus'
+      responses:
+        '200':
+          description: Status after the change
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderStatus'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /orders/{order_id}/events:
+    get:
+      operationId: streamOrderEvents
+      summary: Order status events (SSE)
+      description: |
+        `text/event-stream` of `order.status` events, each with an increasing
+        `id:`. With `Last-Event-ID: N` only buffered events with id > N are
+        replayed before the live stream; without it the whole in-memory buffer
+        of this order is. Public: EventSource cannot send Authorization.
+      tags: [orders]
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/OrderId'
+        - name: Last-Event-ID
+          in: header
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Event stream; never ends on its own
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /uploads/intent:
+    post:
+      operationId: uploadIntent
+      summary: Start an upload
+      description: >
+        Validates the content type against an allowlist, generates the object key
+        itself (`uploads/{userId}/{uuid}.{ext}` — the filename never reaches it),
+        records a PENDING file and returns a presigned PUT URL, or, above the
+        multipart threshold, presigned URLs for every part.
+      tags: [uploads]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadIntentRequest'
+      responses:
+        '200':
+          description: Where to put the bytes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadIntent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /uploads/parts:
+    post:
+      operationId: uploadParts
+      summary: Resume a multipart upload
+      description: >
+        Asks storage which parts it already holds (ListParts) and signs URLs only
+        for the missing ones.
+      tags: [uploads]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadRef'
+      responses:
+        '200':
+          description: Parts already stored and URLs for the rest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadParts'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /uploads/commit:
+    post:
+      operationId: uploadCommit
+      summary: Finish an upload
+      description: >
+        Completes a multipart upload if there is one, then checks with HeadObject
+        that the object exists and has the announced size. Only then COMPLETED.
+        Nothing uploaded → 409.
+      tags: [uploads]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadRef'
+      responses:
+        '200':
+          description: The file is stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadedFile'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /fx-rates/{currency}/latest:
+    get:
+      operationId: getLatestFxRate
+      security: []
+      summary: Get latest fx rate
+      description: >
+        Resolves the fx rate that would be used to snapshot a transaction booked
+        on `on` (defaults to today): the latest `fx_rate` row for `currency` with
+        `rate_date <= on`. `UAH` always resolves to `1` — it is the quoting base,
+        not a row in `fx_rate`.
+      tags: [fx-rates]
+      parameters:
+        - name: currency
+          in: path
+          required: true
+          description: Currency to resolve a rate for.
+          schema:
+            $ref: '#/components/schemas/Currency'
+        - name: on
+          in: query
+          required: false
+          description: Resolve the rate as of this date. Defaults to today.
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Effective fx rate
+          headers:
+            Cache-Control:
+              description: >
+                Freshness of this answer. A closed day (`on` in the past) can only
+                change if a provider publishes a correction, so it is cacheable for
+                a day; today's rate may still be published, so it is cacheable for a
+                minute. Caching reads here is safe because the write path does not
+                use this endpoint — a transaction's `fx_rate` snapshot is read
+                straight from the database.
+              schema:
+                type: string
+                example: public, max-age=86400
+            ETag:
+              description: Validator for conditional requests — send it back in `If-None-Match`.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FxRate'
+        '304':
+          description: Not modified — the `If-None-Match` validator still matches, no body is sent
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /currencies:
+    get:
+      operationId: listCurrencies
+      security: []
+      summary: List currencies
+      description: >
+        Every row of the `currency` lookup table — the reference data behind
+        accounts, transactions, and fx-rates. Small and rarely changed (new
+        rows come from the seed script or a direct `INSERT`, not this API),
+        so unlike `/accounts` and `/transactions` this is a plain array, not a
+        paginated page.
+      tags: [currencies]
+      responses:
+        '200':
+          description: All currencies, ordered by code
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: public, max-age=3600
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CurrencyInfo'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /health:
+    get:
+      operationId: livenessProbe
+      security: []
+      summary: Liveness probe
+      description: >
+        Answers one question: did this process restart? `uptime_seconds` is the
+        process uptime, so it grows across a database password rotation and only
+        resets on a real restart. Deliberately does not touch the database.
+      tags: [health]
+      responses:
+        '200':
+          description: The process is alive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /health/ready:
+    get:
+      operationId: trafficReadinessProbe
+      security: []
+      summary: Traffic readiness probe
+      description: >
+        The Kubernetes readinessProbe. 200 while the process accepts traffic,
+        503 from the moment SIGTERM arrives until the socket closes after the
+        drain, so the pod leaves the Service endpoints before it stops listening.
+        Deliberately not the liveness path.
+      tags: [health]
+      responses:
+        '200':
+          description: The process accepts traffic
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /health/db:
+    get:
+      operationId: databaseReadinessProbe
+      security: []
+      summary: Database readiness probe
+      description: >
+        A real round trip to Postgres. The pool reads the password from the secret
+        file on every new connection, so a 200 here right after a rotation is the
+        proof that the rotated secret took effect without a restart.
+      tags: [health]
+      responses:
+        '200':
+          description: The database answered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DbHealth'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: ES256-signed access token from `POST /auth/login` or `POST /auth/refresh`.
+
+  parameters:
+    OrderId:
+      name: order_id
+      in: path
+      required: true
+      description: Order (transaction) identifier.
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    Unauthorized:
+      description: No access token, or it is expired, tampered with, signed by an unknown key or revoked
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+    Forbidden:
+      description: The token is valid, but this user may not do this — wrong role or someone else's resource
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+    BadRequest:
+      description: The request failed validation against this spec
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+    Conflict:
+      description: Conflict with resource state — for example this Idempotency-Key is still in flight
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+    Unprocessable:
+      description: The body is syntactically valid but conflicts with state — for example Idempotency-Key reuse
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+    InternalError:
+      description: Internal server error
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+    ServiceUnavailable:
+      description: A dependency — the database — did not answer
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+  schemas:
+    UploadIntentRequest:
+      type: object
+      additionalProperties: false
+      required: [filename, contentType, size]
+      properties:
+        filename:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Display only — never part of the object key.
+        contentType:
+          type: string
+          enum: [image/png, image/jpeg, image/webp, application/pdf, application/gzip]
+        size:
+          type: integer
+          minimum: 1
+          maximum: 53687091200
+
+    PartUrl:
+      type: object
+      additionalProperties: false
+      required: [partNumber, url]
+      properties:
+        partNumber:
+          type: integer
+          minimum: 1
+          maximum: 10000
+        url:
+          type: string
+
+    UploadIntent:
+      type: object
+      additionalProperties: false
+      required: [fileId, key, expiresIn]
+      properties:
+        fileId:
+          type: string
+          format: uuid
+        key:
+          type: string
+        expiresIn:
+          type: integer
+          description: Seconds the URLs stay valid.
+        uploadUrl:
+          type: string
+          description: Single PUT — files up to the multipart threshold.
+        partSize:
+          type: integer
+        partCount:
+          type: integer
+        parts:
+          type: array
+          items:
+            $ref: '#/components/schemas/PartUrl'
+
+    UploadRef:
+      type: object
+      additionalProperties: false
+      required: [fileId]
+      properties:
+        fileId:
+          type: string
+          format: uuid
+
+    UploadParts:
+      type: object
+      additionalProperties: false
+      required: [fileId, partSize, partCount, uploaded, parts, expiresIn]
+      properties:
+        fileId:
+          type: string
+          format: uuid
+        partSize:
+          type: integer
+        partCount:
+          type: integer
+        uploaded:
+          type: array
+          items:
+            type: integer
+        parts:
+          type: array
+          items:
+            $ref: '#/components/schemas/PartUrl'
+        expiresIn:
+          type: integer
+
+    UploadedFile:
+      type: object
+      additionalProperties: false
+      required: [fileId, key, status, size]
+      properties:
+        fileId:
+          type: string
+          format: uuid
+        key:
+          type: string
+        status:
+          type: string
+          enum: [PENDING, COMPLETED]
+        size:
+          type: integer
+    TransactionStatus:
+      type: string
+      enum: [pending, posted, failed]
+    OrderStatus:
+      type: object
+      additionalProperties: false
+      required: [id, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/TransactionStatus'
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          minLength: 3
+          maxLength: 254
+          example: demo-owner@example.com
+        password:
+          type: string
+          minLength: 1
+          maxLength: 256
+
+    RefreshRequest:
+      type: object
+      additionalProperties: false
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+          minLength: 1
+          maxLength: 512
+
+    TokenPair:
+      type: object
+      additionalProperties: false
+      required: [access_token, refresh_token, token_type, expires_in]
+      properties:
+        access_token:
+          type: string
+          description: ES256 JWT with `sub`, `role`, `sid` (refresh family), `jti`, `exp`.
+        refresh_token:
+          type: string
+          description: Opaque, single-use. Only its HMAC is stored server-side.
+        token_type:
+          type: string
+          enum: [Bearer]
+        expires_in:
+          type: integer
+          description: Access token lifetime in seconds.
+          example: 600
+
+    Health:
+      type: object
+      description: Liveness of the process itself, with no dependency checked.
+      required: [status, uptime_seconds, version, node_env]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        uptime_seconds:
+          type: number
+          description: Process uptime in seconds. A password rotation does not reset it.
+          example: 42.317
+        version:
+          type: string
+          example: 1.0.0
+        node_env:
+          type: string
+          enum: [development, test, production]
+
+    DbHealth:
+      type: object
+      description: Result of a real query against Postgres, executed with the current secret.
+      required: [status, latency_ms, now, probe_rows, pool_total, pool_idle]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        latency_ms:
+          type: number
+          description: Round trip to Postgres in milliseconds.
+          example: 3.114
+        now:
+          type: string
+          format: date-time
+        probe_rows:
+          type: integer
+          description: Rows read from `health_probe` — proof the query reached real data.
+          example: 1
+        pool_total:
+          type: integer
+          description: Connections currently held by the pool.
+          example: 1
+        pool_idle:
+          type: integer
+          example: 1
+
+    Problem:
+      type: object
+      description: |
+        Single error format — RFC 9457 (`application/problem+json`).
+        The five base fields are always required; `code` and `errors` are extensions of this API.
+      required: [type, title, status, detail, instance]
+      properties:
+        type:
+          type: string
+          format: uri
+          description: Error type URI — a stable identifier clients use to distinguish cases.
+          example: https://api.invest.example/problems/idempotency-key-reuse
+        title:
+          type: string
+          description: Short human-readable name of the error type, the same for every instance of that type.
+          example: Request body failed validation
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+          description: HTTP status duplicated in the body so the problem stays self-contained in logs.
+          example: 422
+        detail:
+          type: string
+          description: What went wrong in this specific case.
+          example: Idempotency-Key has already been used with a different request body
+        instance:
+          type: string
+          description: Reference to this occurrence — the request URI that caused the error.
+          example: /transactions
+        code:
+          type: string
+          description: Machine-readable error code — an extension of this API on top of RFC 9457.
+          example: idempotency-key-reuse
+        errors:
+          type: array
+          description: Per-field details when several validation errors occurred.
+          items:
+            type: object
+            required: [path, message]
+            properties:
+              path:
+                type: string
+                example: /body/entries
+              message:
+                type: string
+                example: must NOT have fewer than 1 items
+
+    Account:
+      type: object
+      description: An account of any kind — from a cash wallet to a property object.
+      required: [id, name, type, currency, balance_cents, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+          example: IBKR brokerage
+        type:
+          $ref: '#/components/schemas/AccountType'
+        currency:
+          $ref: '#/components/schemas/Currency'
+        balance_cents:
+          type: integer
+          format: int64
+          description: >
+            Current balance in cents of the account currency. For `property` — estimated value.
+            Integer only: money is never a float.
+          example: 1250000
+        created_at:
+          type: string
+          format: date-time
+
+    AccountCreate:
+      type: object
+      additionalProperties: false
+      required: [name, type, currency]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 120
+          example: IBKR brokerage
+        type:
+          $ref: '#/components/schemas/AccountType'
+        currency:
+          $ref: '#/components/schemas/Currency'
+        opening_balance_cents:
+          type: integer
+          format: int64
+          default: 0
+          description: Opening balance in cents. Integer only.
+          example: 1250000
+
+    AccountType:
+      type: string
+      description: |
+        Account type. Investments are not a separate subsystem, they are values of this enum:
+        `brokerage` holds securities, `property` holds real estate.
+      enum: [cash, bank, brokerage, property]
+      example: brokerage
+
+    TransactionType:
+      type: string
+      description: |
+        Transaction type. It also defines the money direction, so `amount_cents` is always non-negative:
+
+        - inflow — `income`, `transfer_in`, `sell`
+        - outflow — `expense`, `transfer_out`, `buy`
+
+        A transfer between own accounts is two transactions (`transfer_out` and `transfer_in`)
+        in one batch, applied atomically.
+
+        `buy` and `sell` apply to `brokerage` accounts and fill
+        `instrument_symbol` and `quantity_micro`.
+      enum: [income, expense, transfer_in, transfer_out, buy, sell]
+      example: buy
+
+    Currency:
+      type: string
+      description: |
+        Account or transaction currency, or a currency to resolve an fx rate for.
+        `UAH` plus every fiat currency the NBU API quotes.
+      enum:
+        [
+          UAH, AED, AUD, AZN, BDT, CAD, CHF, CNY, CZK, DKK, DZD, EGP, EUR, GBP,
+          GEL, HKD, HUF, IDR, ILS, INR, JPY, KRW, KZT, LBP, MDL, MXN, MYR, NOK,
+          NZD, PLN, RON, RSD, SAR, SEK, SGD, THB, TND, TRY, USD, VND, ZAR,
+        ]
+      example: UAH
+
+    CurrencyInfo:
+      type: object
+      description: One row of the `currency` lookup table.
+      required: [code, numeric_code, exponent, name]
+      properties:
+        code:
+          type: string
+          pattern: '^[A-Z]{3}$'
+          description: ISO 4217 alphabetic code.
+          example: USD
+        numeric_code:
+          type: integer
+          minimum: 1
+          maximum: 999
+          description: ISO 4217 numeric code.
+          example: 840
+        exponent:
+          type: integer
+          minimum: 0
+          maximum: 6
+          description: >
+            Number of digits after the decimal point in the minor unit
+            (2 for cents, 0 for JPY, 3 for TND).
+          example: 2
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+          example: United States dollar
+
+    Transaction:
+      type: object
+      description: >
+        One operation on an account. The sign of the money movement comes from `type`,
+        not from the sign of `amount_cents`: `amount_cents` is always non-negative.
+      required:
+        - id
+        - account_id
+        - type
+        - amount_cents
+        - currency
+        - booked_at
+        - description
+        - instrument_symbol
+        - quantity_micro
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        account_id:
+          type: string
+          format: uuid
+        type:
+          $ref: '#/components/schemas/TransactionType'
+        amount_cents:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Amount in cents, always non-negative. Integer only.
+          example: 4599
+        currency:
+          $ref: '#/components/schemas/Currency'
+        booked_at:
+          type: string
+          format: date-time
+          description: When the operation was booked to the account (ISO 20022 BookingDate) — unlike `created_at`, which is when the record appeared here.
+        description:
+          type: string
+          maxLength: 500
+          nullable: true
+          description: Optional user comment. `null` if omitted.
+          example: Buy 10 shares of VOO
+        instrument_symbol:
+          type: string
+          maxLength: 20
+          nullable: true
+          description: Instrument ticker for `buy`/`sell`. `null` for other types.
+          example: VOO
+        quantity_micro:
+          type: integer
+          format: int64
+          nullable: true
+          description: >
+            Instrument quantity times 10^6 so fractional shares stay an integer.
+            10 shares = `10000000`. `null` for non-investment types.
+          example: 10000000
+        created_at:
+          type: string
+          format: date-time
+
+    TransactionEntry:
+      type: object
+      description: One item in a create-transactions batch.
+      additionalProperties: false
+      required: [account_id, type, amount_cents, currency, booked_at]
+      properties:
+        account_id:
+          type: string
+          format: uuid
+        type:
+          $ref: '#/components/schemas/TransactionType'
+        amount_cents:
+          type: integer
+          format: int64
+          minimum: 0
+          example: 4599
+        currency:
+          $ref: '#/components/schemas/Currency'
+        booked_at:
+          type: string
+          format: date-time
+        description:
+          type: string
+          maxLength: 500
+          nullable: true
+        instrument_symbol:
+          type: string
+          maxLength: 20
+          nullable: true
+        quantity_micro:
+          type: integer
+          format: int64
+          nullable: true
+
+    CreateTransactionsRequest:
+      type: object
+      additionalProperties: false
+      required: [entries]
+      properties:
+        entries:
+          type: array
+          description: Non-empty list of transactions created atomically.
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/TransactionEntry'
+
+    TransactionBatch:
+      type: object
+      description: Batch result — created transactions in the same order as `entries`.
+      required: [transactions]
+      properties:
+        transactions:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/Transaction'
+
+    AccountPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Account'
+        next_cursor:
+          type: string
+          nullable: true
+          description: >
+            Opaque next-page token. `null` means there are no more pages —
+            the client does not count pages or compare `items` length to `limit`.
+          example: eyJjIjoiMjAyNi0wOC0yNVQxMDowMDowMFoiLCJpZCI6IjllOWMifQ
+
+    FxRate:
+      type: object
+      description: >
+        The rate that applies for a currency on or before a given date — either
+        a real `fx_rate` row, or the `UAH` identity rate (`1`), which is never a
+        row since `UAH` is the quoting base.
+      required: [currency, rate, rate_date, source]
+      properties:
+        currency:
+          $ref: '#/components/schemas/Currency'
+        rate:
+          type: string
+          description: UAH per one unit of `currency`, as a decimal string (never a float).
+          example: '41.6000000000'
+        rate_date:
+          type: string
+          format: date
+          example: '2026-01-02'
+        source:
+          type: string
+          description: Provider this rate came from — part of the `fx_rate` primary key. `base` for the UAH identity rate.
+          example: seed
+
+    TransactionPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Transaction'
+        next_cursor:
+          type: string
+          nullable: true
+          description: >
+            Opaque next-page token. `null` means there are no more pages —
+            the client does not count pages or compare `items` length to `limit`.
+          example: eyJjIjoiMjAyNi0wOC0yNVQxMDowMDowMFoiLCJpZCI6IjllOWMifQ

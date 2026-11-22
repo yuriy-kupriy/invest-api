@@ -1,0 +1,92 @@
+name: kind-deploy
+description: >
+  The HW #28 deployment, run by the pipeline: kind in the runner, the image BY
+  DIGEST, pulumi preview -> cost gate -> pulumi up -> demo:rollout (failed must
+  be 0). Raw files land in ./evidence for the evidence job. App secrets come
+  from the vault (scripts/with-secrets.sh); only vault access is passed in.
+inputs:
+  image:
+    description: ghcr.io/<owner>/invest-api@sha256:<digest> — never a tag
+    required: true
+  cost-bypass:
+    description: name of the bypass label when the PR carries it, else empty
+    default: ''
+  infisical-token:
+    description: vault access (HW #11)
+    required: true
+  infisical-project-id:
+    description: vault project
+    required: true
+  min-requests:
+    description: demo:rollout sample size
+    default: '2000'
+runs:
+  using: composite
+  steps:
+    - name: Install pulumi + infisical CLIs (pinned versions)
+      shell: bash
+      run: |
+        curl -fsSL https://github.com/pulumi/pulumi/releases/download/v3.276.0/pulumi-v3.276.0-linux-x64.tar.gz \
+          | tar xz -C "$RUNNER_TEMP"
+        echo "$RUNNER_TEMP/pulumi" >> "$GITHUB_PATH"
+        curl -fsSL -o "$RUNNER_TEMP/infisical.deb" \
+          https://github.com/Infisical/cli/releases/download/v0.45.3/infisical_0.45.3_linux_amd64.deb
+        sudo dpkg -i "$RUNNER_TEMP/infisical.deb" >/dev/null
+        mkdir -p evidence
+
+    - name: kind cluster (one node, NodePort 30080 on 127.0.0.1)
+      uses: helm/kind-action@ea822c7bf1874f08e5a491df991c228edffc3376 # v1.15.2
+      with:
+        cluster_name: invest
+        config: k8s/kind-config.yaml
+
+    - name: Point the stack at the digest
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+        INFISICAL_TOKEN: ${{ inputs.infisical-token }}
+        INFISICAL_PROJECT_ID: ${{ inputs.infisical-project-id }}
+      run: |
+        npm --prefix infra ci --silent
+        # The node pulls exactly this digest; REV = digest changes the pod template.
+        bash scripts/with-secrets.sh dev bash scripts/pulumi.sh config set image "$IMAGE"
+        bash scripts/with-secrets.sh dev bash scripts/pulumi.sh config set rev "${IMAGE##*@sha256:}"
+
+    - name: pulumi preview
+      shell: bash
+      env:
+        INFISICAL_TOKEN: ${{ inputs.infisical-token }}
+        INFISICAL_PROJECT_ID: ${{ inputs.infisical-project-id }}
+      run: bash scripts/with-secrets.sh dev bash scripts/pulumi.sh preview --json > evidence/plan.json
+
+    # Reacts to the change, not the sum: budget = main's cost + max($10, 20 %).
+    # The baseline lives in one file (infra/cost-baseline-usd.txt) for both workflows.
+    - name: Cost gate
+      shell: bash
+      env:
+        PLAN_JSON: evidence/plan.json
+        COST_BYPASS: ${{ inputs.cost-bypass }}
+      run: |
+        b=$(cat infra/cost-baseline-usd.txt)
+        COST_BUDGET_USD=$(node -e 'const b=Number(process.argv[1]);console.log((b+Math.max(10,b*0.2)).toFixed(2))' "$b") \
+          npm run -s gate:cost
+
+    - name: pulumi up
+      shell: bash
+      env:
+        INFISICAL_TOKEN: ${{ inputs.infisical-token }}
+        INFISICAL_PROJECT_ID: ${{ inputs.infisical-project-id }}
+      run: |
+        npm run -s up
+        kubectl -n invest rollout status deploy/invest-api --timeout=180s
+        kubectl -n invest get deploy invest-api -o json > evidence/deployment.json
+        bash scripts/with-secrets.sh dev bash scripts/secret-count.sh evidence/deployment.json > evidence/secret-count.txt
+        echo "secret-in-manifest=$(cat evidence/secret-count.txt)"
+
+    - name: demo:rollout (failed must be 0)
+      shell: bash
+      env:
+        MIN_REQUESTS: ${{ inputs.min-requests }}
+        INFISICAL_TOKEN: ${{ inputs.infisical-token }}
+        INFISICAL_PROJECT_ID: ${{ inputs.infisical-project-id }}
+      run: npm run -s demo:rollout | tee evidence/rollout.txt

@@ -17,7 +17,6 @@ const BURST = 8;
 
 run(() =>
   runObsDemo(async (obs) => {
-    const linesOf = (traceId: string) => obs.logs().filter((l) => l.trace_id === traceId);
 
     // 1. One request, three layers, one key.
     const one = traceparent();

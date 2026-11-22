@@ -32,7 +32,9 @@ const vault = Object.fromEntries(VAULT_VARS.map((name) => [name, process.env[nam
 >;
 
 const cfg = new pulumi.Config();
-const image = 'invest-api:hw28'; // what npm run image:build tags and cluster:up loads
+// Local (#28): the tag npm run image:build makes and cluster:up loads.
+// CI (#32): `pulumi config set image ghcr.io/…@sha256:…` — the digest the build job output.
+const image = cfg.get('image') ?? 'invest-api:hw28';
 const replicas = 3;
 const nodePort = 30080; // also in k8s/kind-config.yaml and the demos
 const rev = cfg.require('rev');
