@@ -3180,3 +3180,165 @@ HPA оголошено (`autoscaling/v2`, 2…5, CPU 70 %). У kind немає m
 | [`scripts/load.mjs`](scripts/load.mjs) | генератор навантаження, код кожної відповіді у файл |
 | [`demo/image.sh`](demo/image.sh), [`demo/rollout.sh`](demo/rollout.sh), [`demo/pdb.sh`](demo/pdb.sh) | три демо з виміряними числами |
 | [`src/health/readiness.ts`](src/health/readiness.ts), [`src/main.ts`](src/main.ts) | readiness окремо від liveness, прогрів, дренаж на SIGTERM |
+
+---
+
+# ДЗ #29 курсового: обсервабельність — один ключ у логу, у спані й у заголовку
+
+Що о 03:15 віддало 500: береш `trace_id` з рядка логу, відкриваєш трейс у Jaeger, бачиш, на якому
+спані впало. Ключ один, бо корелятор логу — `trace_id` активного спана OpenTelemetry, а не власний uuid.
+
+## Grading
+
+Немає доступу до сховища → `SKIP_VAULT=1`, значення — `export`-ом. Стенд (Postgres, Jaeger, Prometheus,
+Grafana) — окремий compose у [`observability/`](observability/compose.yaml), порти 22900–22999.
+Postgres у ньому живе на tmpfs, а `postgres/postgres` — дев-креденшел цього стенда, не секрет.
+
+```bash
+export SKIP_VAULT=1            # у грейдера немає доступу до сховища
+export GRAFANA_ADMIN_USER=admin
+export GRAFANA_ADMIN_PASSWORD=hw29-grader-grafana
+docker compose -f observability/compose.yaml up -d --wait   # стек спостережуваності + Postgres для демо
+
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:22918   # OTLP/HTTP приймач (Jaeger)
+export TRACE_API_URL=http://127.0.0.1:22904                 # query API Jaeger, його читає demo:trace
+export PROMETHEUS_URL=http://127.0.0.1:22901
+export DB_URL=postgres://postgres@127.0.0.1:22905/invest
+printf 'postgres' > /tmp/hw29-db-password
+export DB_PASSWORD_FILE=/tmp/hw29-db-password
+# одноразова пара ES256 для прогону; PEM їде в base64 (як у ДЗ #24)
+node -e 'const {generateKeyPairSync}=require("node:crypto");
+const k=generateKeyPairSync("ec",{namedCurve:"P-256",
+  privateKeyEncoding:{type:"pkcs8",format:"pem"},
+  publicKeyEncoding:{type:"spki",format:"pem"}});
+const fs=require("node:fs");
+fs.writeFileSync("/tmp/priv.b64",Buffer.from(k.privateKey).toString("base64"));
+fs.writeFileSync("/tmp/pub.b64",Buffer.from(k.publicKey).toString("base64"));'
+export JWT_KID=hw29-grader-kid
+export JWT_PRIVATE_KEY="$(cat /tmp/priv.b64)"
+export JWT_PUBLIC_KEY="$(cat /tmp/pub.b64)"
+export REFRESH_TOKEN_PEPPER=hw29-grader-pepper
+export STORAGE_BUCKET=hw29-grader-files
+export STORAGE_ACCESS_KEY=hw29-grader-access-key
+export STORAGE_SECRET_KEY=hw29-grader-secret-key
+npm ci
+
+npm run demo:logs
+npm run demo:metrics
+npm run demo:trace
+
+docker compose -f observability/compose.yaml down -v
+```
+
+Що треба знати:
+
+- Кожне демо саме збирає проєкт (`npm run build`, тобто `nest build` → tsc), саме мігрує базу й чистить свій
+  стан (демо-користувачі ДЗ #24 видаляються каскадом разом із рахунками й транзакціями), саме піднімає
+  справжній `node dist/main.js` на `127.0.0.1:22910` і гасить його через SIGTERM. Порт 22910 має бути вільним.
+- Prometheus скрейпить `host.docker.internal:22910` (на Linux через `host-gateway`), тож після демо панелі
+  дашборда показують їхній трафік. Grafana: <http://127.0.0.1:22902>, дашборд «invest-api — RED».
+- Локально зі сховищем те саме — `npm run obs:up` (обгортка підтягує `GRAFANA_ADMIN_*`), далі три демо
+  без `export`.
+
+## Observability
+
+### Що де лежить
+
+| Файл | Роль |
+|---|---|
+| [`src/observability/otel.ts`](src/observability/otel.ts) | `NodeSDK`: OTLP/HTTP-експортер, інструментування http / express / pg, W3C traceparent. Перший рядок [`src/main.ts`](src/main.ts) |
+| [`src/observability/logger.ts`](src/observability/logger.ts) | pino у stdout: `mixin` дописує `trace_id`/`span_id` активного спана і `userId`/`tenant`/`idempotencyKey` з ALS; `redact` заголовків; Nest-логер теж іде в JSON |
+| [`src/observability/context.ts`](src/observability/context.ts) | `AsyncLocalStorage` запиту + перемикач демо-збою |
+| [`src/observability/http.ts`](src/observability/http.ts) | middleware: відкриває ALS-контекст, пише рядок `request completed` (слухач `finish` через `AsyncResource.bind`) |
+| [`src/observability/metrics.ts`](src/observability/metrics.ts) | prom-client: `http_requests_total` + `http_request_duration_seconds`, `GET /metrics` |
+| [`observability/`](observability/) | compose стенда, `prometheus.yml`, провіження датасорсів і дашборда, [JSON дашборда](observability/grafana/dashboards/invest-api.json) |
+| [`src/demo-obs-kit.ts`](src/demo-obs-kit.ts), [`demo-logs`](src/demo-logs.ts), [`demo-metrics`](src/demo-metrics.ts), [`demo-trace`](src/demo-trace.ts) | три демо |
+
+Шари одного запиту: `http` → `transactions.controller` → `transactions.service` → `transactions.repo`
+(`logger.child({ layer })`). Жодна функція не приймає `req` заради логування. `userId` кладе в ALS
+`JwtStrategy.validate`, ключ ідемпотентності й tenant (`x-tenant-id`, інакше `default`) кладе middleware.
+
+Redaction: тіла запитів у лог не пишуться взагалі. Тож тіло `/auth/login` (email, пароль), refresh-токен
+і деталі транзакцій туди не потрапляють. Заголовки `req.headers.authorization` і `req.headers.cookie` →
+`[REDACTED]`. pino ховає лише точні шляхи: секрет, вкладений під шляхом, якого немає в списку, у лог
+потрапить. Тому рядок `request completed` пише заголовки під відомим ключем `req.headers`, а тест
+[`observability.e2e-spec.ts`](test/e2e/observability.e2e-spec.ts) у CI ловить, якщо це зламається.
+
+Детермінований 5xx для демо: заголовок `x-fault: 1` спрацьовує лише при `FAULT_INJECTION=1` (за
+замовчуванням `0`, демо вмикають його своєму дочірньому процесу). Прапорець їде в ALS, і кидає репозиторій
+**після** свого запиту до бази. Так трейс має pg-спани, а найглибший шар доводить, що контекст дійшов.
+
+### Змінні
+
+| Змінна | Хто читає | Джерело |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP-експортер у застосунку | сховище (Infisical, `dev`) через `scripts/with-secrets.sh`; у грейдера — `export` |
+| `TRACE_API_URL` | `demo:trace` (query API Jaeger) | сховище / `export` |
+| `PROMETHEUS_URL` | харнес демо: тримає сервіс, доки Prometheus не зробить ще один скрейп, щоб дашборд побачив прогін. Самі числа демо беруть з `/metrics` напряму | сховище / `export` |
+| `GRAFANA_ADMIN_USER`, `GRAFANA_ADMIN_PASSWORD` | контейнер Grafana (`npm run obs:up`) | сховище / `export` |
+| `DB_URL`, `DB_PASSWORD_FILE`, `JWT_*`, `REFRESH_TOKEN_PEPPER`, `STORAGE_*` | застосунок (як у ДЗ #24/#26) | сховище / `export` |
+| `FAULT_INJECTION` | middleware контексту | `.env.example` (`0`); демо ставлять `1` своєму дочірньому процесу |
+| `LOG_LEVEL` | pino | необовʼязкова; дефолт `info`, у тестах `silent` |
+
+Нових env-файлів немає. `FAULT_INJECTION` додано в наявні [`env.schema.ts`](src/config/env.schema.ts)
+і [`.env.example`](.env.example).
+
+### Три панелі — три питання RED
+
+| Панель | Питання | PromQL |
+|---|---|---|
+| Rate | скільки запитів за секунду на кожен маршрут? | `sum by (route) (rate(http_requests_total[1m]))` |
+| Errors | яка частка відповідей — 5xx? | `sum by (route) (rate(http_requests_total{status=~"5.."}[1m])) / sum by (route) (rate(http_requests_total[1m]))` |
+| Duration | скільки чекає повільний запит (p95)? | `histogram_quantile(0.95, sum by (le, route) (rate(http_request_duration_seconds_bucket[1m])))` |
+
+`[1m]`, а не `[5m]`: демо коротке, а Prometheus скрейпить кожні 2 с. Datasource `uid: prometheus`
+провіжениться з [`datasources.yaml`](observability/grafana/provisioning/datasources/datasources.yaml), дашборд —
+з [`dashboards.yaml`](observability/grafana/provisioning/dashboards/dashboards.yaml).
+
+Лейбли: `method`, `route`, `status`. `route` — шаблон Express (`req.route.path`, напр.
+`/transactions/:transaction_id`), для запитів поза роутером — `expressRoute` валідатора OpenAPI, інакше
+`unmatched`. Сирий шлях туди не потрапляє ніколи. `/metrics` у лічильник не входить.
+
+### Межі бакетів
+
+`0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30` секунд.
+
+- Низ (5–100 мс) — звичайні запити: найгірший запит прогону `demo:metrics` (усі маршрути, разом із логіном
+  через scrypt) — **70–86 мс**.
+- Верх (2,5–30 с) — те, що бачимо, коли все погано: пул вичерпано (`DB_CONNECT_TIMEOUT_MS` = 5 с), холодний
+  старт, повільний NBU-запит. Верхній скінченний `le=30` з великим запасом більший за будь-який таймаут на
+  шляху запиту. Тому `histogram_quantile` не впирається в межу й не малює «здорову» лінію в момент аварії.
+  `above-top-bucket=0` у кожному прогоні.
+
+### Власні числа (три прогони поспіль, вивід ідентичний)
+
+| Демо | Вивід (кожен з 3 прогонів) |
+|---|---|
+| `demo:logs` | `non-json-lines=0 layers=4 distinct-trace-ids=1 trace-id-matches-header=1 burst=8 burst-trace-ids=8 burst-group-size=4 burst-uneven=0 secret-req-logged=1 secret-in-logs=0` (97 рядків stdout) |
+| `demo:metrics` | `sent-ok=90 sent-fail=10 counter-delta=100 errors-delta=10 above-top-bucket=0 series-before=5 series-after=5 distinct-ids=100` |
+| `demo:trace` | `status=500 spans=20 orphan-spans=0 trace-matches-header=1 trace-matches-log=1 span-status-error=1` |
+
+Відрізняється між прогонами лише `worst-ms` (86 / 79 / 70).
+
+Як рахуються числа (нічого не друкується «на віру»):
+
+- `burst-*` — групування рядків stdout сервісу за `trace_id`. Група «нерівна», якщо її розмір інший або
+  хоч один її рядок має чужий `idempotencyKey`/`userId`. Модульна змінна «поточного запиту» дає тут > 0.
+- `counter-delta`, `errors-delta`, `series-*`, `above-top-bucket` — з двох скрейпів `/metrics`. Перед
+  `series-before` маршрут прогрітий тими самими результатами, що дасть прогін (404 і 500).
+- `trace-matches-log` — `trace_id` кожного рядка шарів дорівнює `traceID` серверного спана, а його `span_id`
+  є серед спанів, які повернув Jaeger. `orphan-spans` — спани, чий батько не в трейсі й не `parent-id` з заголовка.
+
+Перевірено, що демо ловить поломку. Якщо в `route` підставити сирий `req.path`, `demo:metrics` друкує
+`series-before=5 series-after=105` і падає з кодом 1.
+
+### Памʼять стенда
+
+`docker stats --no-stream`: до підняття — лише kind-кластер ДЗ #28 (`invest-control-plane` ≈ 1,08 GiB).
+Після: Grafana 116 MiB, Postgres 74 MiB, Prometheus 45 MiB, Jaeger 17 MiB, разом **≈ 252 MiB** на старті.
+Після трьох демо — ≈ 294 MiB (Jaeger у памʼяті тримає трейси: 52 MiB). З кластером (≈ 1 GiB) влазить у 3,8 GiB
+Docker Desktop. Годинник: `date +%s` хоста і контейнера збігаються (різниця — час старту `docker run`).
+
+### Не входить
+
+Доставка логів у Loki, алерти, tail-based sampling, Sentry/GlitchTip, другий сервіс (бонуси без балів).

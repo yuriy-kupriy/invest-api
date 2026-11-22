@@ -1,6 +1,7 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
+import { requestContext } from '@/observability/context';
 import { problem } from '@/shared/problem.exception';
 import { AccessPayload, AuthUser, toAuthUser } from './auth.types';
 import { JWT_AUDIENCE, JWT_ISSUER, TokensService } from './tokens.service';
@@ -27,6 +28,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     if (await this.tokens.isRevoked(payload.jti)) {
       throw problem(HttpStatus.UNAUTHORIZED, 'token-revoked', 'access token was revoked');
     }
+    const store = requestContext.getStore();
+    if (store) store.userId = payload.sub;
     return toAuthUser(payload);
   }
 }

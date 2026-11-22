@@ -116,6 +116,12 @@ export const envSchema = z.object({
   /** HW #28. How long /health/ready stays red after SIGTERM before the socket closes. */
   DRAIN_MS: z.coerce.number().int().min(0).max(120000).default(0),
 
+  /**
+   * HW #29. `1` lets the `x-fault: 1` header turn a transactions request into a
+   * 500 (demo only, never in production).
+   */
+  FAULT_INJECTION: z.enum(['0', '1']).default('0'),
+
   // HW #24. Vault-only and deliberately WITHOUT defaults: a default signing key
   // is a key committed to git, and a bare `npm run start` must die naming the
   // missing variable instead.

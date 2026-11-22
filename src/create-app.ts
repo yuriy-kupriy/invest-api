@@ -5,6 +5,9 @@ import { ExpressAdapter } from '@nestjs/platform-express';
 import express, { NextFunction, Request, Response } from 'express';
 import * as OpenApiValidator from 'express-openapi-validator';
 import { AppModule } from '@/app.module';
+import { requestContextMiddleware } from '@/observability/http';
+import { PinoNestLogger } from '@/observability/logger';
+import { metricsHandler, metricsMiddleware } from '@/observability/metrics';
 import { sendProblem } from '@/shared/problem.format';
 
 export interface CreateAppOptions {
@@ -20,7 +23,13 @@ export interface CreateAppOptions {
  */
 export async function createApp(options: CreateAppOptions = {}): Promise<INestApplication> {
   const server = express();
+  // HW #29: /metrics before the OpenAPI validator (it is not in the spec, the
+  // validator would 404 it) and outside the RED counter it reports.
+  server.get('/metrics', metricsHandler);
+  server.use(metricsMiddleware);
   server.use(express.json());
+  // After body parsing: the parser's stream callbacks would not carry our ALS store.
+  server.use(requestContextMiddleware);
   server.use(
     OpenApiValidator.middleware({
       apiSpec: join(__dirname, '..', 'openapi', 'openapi.yaml'),
@@ -35,7 +44,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<INestAp
 
   const app = await NestFactory.create(AppModule, new ExpressAdapter(server), {
     bodyParser: false,
-    ...(options.logger === false ? { logger: false } : {}),
+    logger: options.logger === false ? false : new PinoNestLogger(),
   });
 
   app.useGlobalPipes(
