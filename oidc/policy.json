@@ -1,5 +1,5 @@
 {
   "iss": "https://token.actions.githubusercontent.com",
   "aud": "invest-api-deploy",
-  "sub": ["repo:yuriy-kupriy/invest-api:environment:kind"]
+  "sub": ["repo:yuriy-kupriy@8182411/invest-api@1346615839:environment:kind"]
 }

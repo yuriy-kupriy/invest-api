@@ -39,13 +39,14 @@ function jwt(claims) {
 const now = Math.floor(Date.now() / 1000);
 const base = { iss: issuer, aud: audience, iat: now, nbf: now, exp: now + 300 };
 const allowedSub = policy.sub[0];
-const [owner, repo] = allowedSub.replace(/^repo:/, '').split(':')[0].split('/');
+// Someone else's repository: same shape, same environment, other owner and IDs.
+const foreignSub = allowedSub.replace(/^repo:[^:]+/, 'repo:attacker@424242/invest-api@424242');
 
 const green = jwt({ ...base, sub: allowedSub });
 const tampered = green.slice(0, -6) + (green.endsWith('AAAAAA') ? 'BBBBBB' : 'AAAAAA');
 const cases = [
   ['green', green, '1', '1'],
-  ['foreign-sub', jwt({ ...base, sub: allowedSub.replace(`${owner}/${repo}`, `attacker-${owner}/${repo}`) }), '1', '0'],
+  ['foreign-sub', jwt({ ...base, sub: foreignSub }), '1', '0'],
   ['bad-signature', tampered, '0', '0'],
 ];
 

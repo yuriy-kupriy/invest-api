@@ -3470,7 +3470,10 @@ GitHub замінює на `***` лише **точне** входження зн
 ### OIDC
 
 Умова довіри — [`oidc/policy.json`](oidc/policy.json): `iss=https://token.actions.githubusercontent.com`,
-`aud=invest-api-deploy`, `sub` — **точний** рядок `repo:yuriy-kupriy/invest-api:environment:kind`, без шаблонів.
+`aud=invest-api-deploy`, `sub` — **точний** рядок `repo:yuriy-kupriy@8182411/invest-api@1346615839:environment:kind`, без шаблонів.
+Форма з ID власника й репозиторію (`OWNER@OWNER-ID/REPO@REPO-ID`) — та, яку GitHub видав цьому репозиторію; рядок
+взято з лога джоби `oidc` першого прогону. Чужий репозиторій з тим самим імʼям має інший ID, тож не пройде навіть після
+перейменування.
 Гейт тягне `<iss>/.well-known/openid-configuration` → `jwks_uri` → ключ за `kid`. Приймає лише `RS256`
 (алгоритм не береться з заголовка на віру). Перевіряє підпис через `node:crypto`, далі `iss`, `aud`, `exp`, `nbf`, `sub`.
 `iss`, `aud`, адреса набору ключів і файл умови — параметри, тому той самий код біжить у `demo:oidc` з моєю

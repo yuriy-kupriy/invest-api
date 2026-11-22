@@ -180,7 +180,7 @@ jobs:
     name: OIDC gate (before deploy)
     needs: gates
     runs-on: ubuntu-latest
-    # sub = repo:<owner>/<repo>:environment:kind — what oidc/policy.json allows.
+    # sub = repo:<owner>@<id>/<repo>@<id>:environment:kind — what oidc/policy.json allows.
     environment: kind
     timeout-minutes: 5
     permissions:
