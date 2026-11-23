@@ -3,7 +3,8 @@ description: >
   The HW #28 deployment, run by the pipeline: kind in the runner, the image BY
   DIGEST, pulumi preview -> cost gate -> pulumi up -> demo:rollout (failed must
   be 0). Raw files land in ./evidence for the evidence job. App secrets come
-  from the vault (scripts/with-secrets.sh); only vault access is passed in.
+  from the vault (scripts/with-secrets.sh) when vault access is passed in, else
+  they are throwaway values generated in the job.
 inputs:
   image:
     description: ghcr.io/<owner>/invest-api@sha256:<digest> — never a tag
@@ -12,28 +13,45 @@ inputs:
     description: name of the bypass label when the PR carries it, else empty
     default: ''
   infisical-token:
-    description: vault access (HW #11)
-    required: true
+    description: vault access (HW #11); empty -> throwaway app secrets for this run
+    default: ''
   infisical-project-id:
     description: vault project
-    required: true
+    default: ''
   min-requests:
     description: demo:rollout sample size
     default: '2000'
 runs:
   using: composite
   steps:
-    # Fail in a second with the real cause, not minutes later inside with-secrets.sh.
-    - name: Vault access present
+    # Vault when access was given; otherwise throwaway values made here, masked, gone with
+    # the runner. Either way no app secret is stored in GitHub.
+    - name: App secrets — vault, or throwaway for this run
       shell: bash
       env:
         HAS_TOKEN: ${{ inputs.infisical-token != '' }}
-        HAS_PROJECT: ${{ inputs.infisical-project-id != '' }}
       run: |
-        ok=1
-        [ "$HAS_TOKEN" = true ] || { echo "::error::secret INFISICAL_TOKEN is not set (repo or environment 'kind')"; ok=0; }
-        [ "$HAS_PROJECT" = true ] || { echo "::error::secret INFISICAL_PROJECT_ID is not set (repo or environment 'kind')"; ok=0; }
-        [ "$ok" = 1 ]
+        if [ "$HAS_TOKEN" = true ]; then echo "app-secrets=vault"; exit 0; fi
+        echo "app-secrets=throwaway (no INFISICAL_TOKEN)"
+        node -e '
+          const c = require("node:crypto"), fs = require("node:fs");
+          const r = (n) => c.randomBytes(n).toString("hex");
+          const k = c.generateKeyPairSync("ec", { namedCurve: "P-256",
+            privateKeyEncoding: { type: "pkcs8", format: "pem" },
+            publicKeyEncoding: { type: "spki", format: "pem" } });
+          const v = {
+            // host is replaced by the in-cluster postgres (as in #28); role/db are not secret
+            DB_URL: "postgres://invest_app@db.example.invalid:6432/invest",
+            DB_PASSWORD: r(24), JWT_KID: "ci-" + r(8),
+            JWT_PRIVATE_KEY: Buffer.from(k.privateKey).toString("base64"),
+            JWT_PUBLIC_KEY: Buffer.from(k.publicKey).toString("base64"),
+            REFRESH_TOKEN_PEPPER: r(32), STORAGE_REGION: "eu-ci-1",
+            STORAGE_BUCKET: "invest-ci-" + r(4), STORAGE_ACCESS_KEY: r(16),
+            STORAGE_SECRET_KEY: r(32), PULUMI_CONFIG_PASSPHRASE: r(32), SKIP_VAULT: "1" };
+          for (const [n, x] of Object.entries(v)) {
+            if (x.length >= 16) console.log("::add-mask::" + x);
+            fs.appendFileSync(process.env.GITHUB_ENV, n + "=" + x + "\n");
+          }'
 
     - name: Install pulumi + infisical CLIs (pinned versions)
       shell: bash
