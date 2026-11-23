@@ -23,6 +23,18 @@ inputs:
 runs:
   using: composite
   steps:
+    # Fail in a second with the real cause, not minutes later inside with-secrets.sh.
+    - name: Vault access present
+      shell: bash
+      env:
+        HAS_TOKEN: ${{ inputs.infisical-token != '' }}
+        HAS_PROJECT: ${{ inputs.infisical-project-id != '' }}
+      run: |
+        ok=1
+        [ "$HAS_TOKEN" = true ] || { echo "::error::secret INFISICAL_TOKEN is not set (repo or environment 'kind')"; ok=0; }
+        [ "$HAS_PROJECT" = true ] || { echo "::error::secret INFISICAL_PROJECT_ID is not set (repo or environment 'kind')"; ok=0; }
+        [ "$ok" = 1 ]
+
     - name: Install pulumi + infisical CLIs (pinned versions)
       shell: bash
       run: |

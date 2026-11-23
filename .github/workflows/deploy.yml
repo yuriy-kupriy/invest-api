@@ -75,6 +75,8 @@ jobs:
     name: deploy to kind + demo:rollout
     needs: [resolve, oidc]
     runs-on: ubuntu-latest
+    # Secrets set on the 'kind' environment are visible only to jobs that name it.
+    environment: kind
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
