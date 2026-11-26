@@ -33,3 +33,6 @@ demo
 docker
 graphify-out
 backups
+
+# Course project: compose-generated secrets
+.compose

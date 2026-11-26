@@ -387,6 +387,130 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /transactions/checkout:
+    post:
+      operationId: checkout
+      summary: Buy an instrument (checkout)
+      description: |
+        Debits the account with a guarded `UPDATE … WHERE balance_cents >= cost`,
+        writes the order (`transactions.type = buy`), a receipt job and the
+        `order.placed` event to the outbox — one COMMIT. The relay carries the
+        event to RabbitMQ; the consumer issues the receipt that `GET /orders/{order_id}`
+        shows as `receipt_issued_at`. The Idempotency-Key is scoped to the account
+        and stored in Postgres: the same key with the same order replays the same
+        order, with a different order yields `422`.
+      tags: [transactions]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 8
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlaceOrderRequest'
+      responses:
+        '201':
+          description: Order placed (or replayed for the same key)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /orders/{order_id}:
+    get:
+      operationId: getOrder
+      summary: Get order
+      description: |
+        The order with the results of the work done after it was placed:
+        `receipt_issued_at` (RabbitMQ consumer) and `settled_at` (broker webhook).
+      tags: [orders]
+      parameters:
+        - $ref: '#/components/parameters/OrderId'
+      responses:
+        '200':
+          description: Order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /webhooks/trades:
+    post:
+      operationId: tradeSettled
+      summary: Broker webhook — trade settled
+      description: |
+        Public; authenticated by `X-Signature: sha256=<hex>`, an HMAC-SHA256 of
+        the raw body with `TRADE_WEBHOOK_SECRET`, compared in constant time.
+        `event_id` is deduplicated in Postgres (a redelivery answers `duplicate`),
+        `amount_cents` must equal the amount frozen at checkout (`422` otherwise),
+        and the settlement row is append-only: one per order.
+      tags: [orders]
+      security: []
+      parameters:
+        - name: X-Signature
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: '^sha256=[0-9a-f]{64}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TradeSettled'
+      responses:
+        '200':
+          description: Accepted (settled now, or recognised as already handled)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TradeSettlementResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   /orders/{order_id}/status:
     patch:
       operationId: changeOrderStatus
@@ -396,6 +520,8 @@ paths:
         and balance correction run in one DB transaction; after COMMIT an
         `order.status` event goes to the WS room `orders:<id>` and the SSE stream.
         Setting the current status again is a no-op without an event.
+        A settled order is final (409); booking it again needs the balance
+        to cover it (422).
       tags: [orders]
       parameters:
         - $ref: '#/components/parameters/OrderId'
@@ -425,6 +551,10 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -930,6 +1060,84 @@ components:
     TransactionStatus:
       type: string
       enum: [pending, posted, failed]
+    PlaceOrderRequest:
+      type: object
+      additionalProperties: false
+      required: [account_id, instrument_id, quantity, unit_price_cents]
+      properties:
+        account_id:
+          type: string
+          format: uuid
+        instrument_id:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 1000000
+        unit_price_cents:
+          type: integer
+          minimum: 1
+          maximum: 1000000000
+    Order:
+      type: object
+      additionalProperties: false
+      required: [id, account_id, instrument_id, status, amount_cents, currency, quantity_micro, receipt_issued_at, settled_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        account_id:
+          type: string
+          format: uuid
+        instrument_id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/TransactionStatus'
+        amount_cents:
+          type: integer
+          format: int64
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+        quantity_micro:
+          type: integer
+          format: int64
+        receipt_issued_at:
+          type: string
+          format: date-time
+          nullable: true
+        settled_at:
+          type: string
+          format: date-time
+          nullable: true
+    TradeSettled:
+      type: object
+      additionalProperties: false
+      required: [event_id, order_id, amount_cents]
+      properties:
+        event_id:
+          type: string
+          format: uuid
+        order_id:
+          type: string
+          format: uuid
+        amount_cents:
+          type: integer
+          format: int64
+          minimum: 1
+    TradeSettlementResult:
+      type: object
+      additionalProperties: false
+      required: [order_id, outcome]
+      properties:
+        order_id:
+          type: string
+          format: uuid
+        outcome:
+          type: string
+          enum: [settled, duplicate, already-settled]
     OrderStatus:
       type: object
       additionalProperties: false

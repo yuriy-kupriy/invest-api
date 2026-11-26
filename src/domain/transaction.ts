@@ -11,6 +11,16 @@ export const TRANSACTION_TYPES = [
 
 export type TransactionType = (typeof TRANSACTION_TYPES)[number];
 
+/** Direction of a booked amount on the account balance. */
+export const SIGN: Record<TransactionType, 1 | -1> = {
+  income: 1,
+  transfer_in: 1,
+  sell: 1,
+  expense: -1,
+  transfer_out: -1,
+  buy: -1,
+};
+
 export interface Transaction {
   id: string;
   account_id: string;

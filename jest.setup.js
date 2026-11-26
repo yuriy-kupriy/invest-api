@@ -11,3 +11,5 @@ process.env.DB_URL = process.env.DB_URL || 'postgres://invest_app@localhost:5432
 process.env.DRIFT = '0';
 // Same reasoning: a test run must never reach out to bank.gov.ua on boot.
 process.env.FX_SYNC_ON_START = '0';
+// The trade-settlement webhook is disabled without a key; tests sign with this one.
+process.env.TRADE_WEBHOOK_SECRET = 'test-trade-webhook-secret';

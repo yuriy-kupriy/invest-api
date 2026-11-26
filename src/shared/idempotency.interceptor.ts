@@ -22,7 +22,25 @@ interface DoneRecord {
 
 type IdempotencyRecord = InFlightRecord | DoneRecord;
 
-const store = new Map<string, IdempotencyRecord>();
+// shortcut: per-process memory — replicas do not share keys (checkout's own key
+// lives in Postgres, other POSTs do not); move to Redis when another POST needs it.
+export const idempotencyStore = new Map<string, IdempotencyRecord>();
+const MAX_KEYS = 100_000;
+
+/**
+ * Keeps the store bounded. A Map iterates in insertion order and every record
+ * gets the same TTL, so the expired ones sit at the front: stop at the first
+ * live one. Past MAX_KEYS the oldest go even if live — a replay lost to memory
+ * pressure beats the process dying of it.
+ */
+export function evictIdempotencyKeys(now = Date.now()): void {
+  for (const [key, rec] of idempotencyStore) {
+    if (rec.expiresAt > now && idempotencyStore.size <= MAX_KEYS) {
+      break;
+    }
+    idempotencyStore.delete(key);
+  }
+}
 
 function fingerprint(body: unknown): string {
   return createHash('sha256').update(JSON.stringify(body ?? null)).digest('hex');
@@ -48,9 +66,9 @@ export class IdempotencyInterceptor implements NestInterceptor {
 
     const fp = fingerprint(req.body);
 
-    let rec = store.get(key);
+    let rec = idempotencyStore.get(key);
     if (rec && rec.expiresAt <= Date.now()) {
-      store.delete(key);
+      idempotencyStore.delete(key);
       rec = undefined;
     }
 
@@ -74,7 +92,8 @@ export class IdempotencyInterceptor implements NestInterceptor {
       return of(rec.body);
     }
 
-    store.set(key, { state: 'in-flight', fingerprint: fp, expiresAt: Date.now() + TTL_MS });
+    evictIdempotencyKeys();
+    idempotencyStore.set(key, { state: 'in-flight', fingerprint: fp, expiresAt: Date.now() + TTL_MS });
 
     let captured: unknown;
     res.on('finish', () => {
@@ -94,14 +113,15 @@ export class IdempotencyInterceptor implements NestInterceptor {
       // handler's work is one DB transaction, and the only step left after
       // COMMIT is serialising the response.
       if (res.statusCode === HttpStatus.CREATED) {
-        store.set(key, {
+        idempotencyStore.delete(key); // re-insert at the back: insertion order stays expiry order
+        idempotencyStore.set(key, {
           state: 'done',
           fingerprint: fp,
           body: captured,
           expiresAt: Date.now() + TTL_MS,
         });
       } else {
-        store.delete(key);
+        idempotencyStore.delete(key);
       }
     });
 

@@ -5,7 +5,7 @@ import { AccountsModule } from '@/accounts/accounts.module';
 import { AuthModule } from '@/auth/auth.module';
 import { validateEnv } from '@/config/env.validation';
 import { CurrenciesModule } from '@/currencies/currencies.module';
-import { DbModule } from '@/db/db.module';
+import { AppTypeOrmModule } from '@/db/typeorm.module';
 import { FilesModule } from '@/files/files.module';
 import { FxRatesModule } from '@/fx-rates/fx-rates.module';
 import { HealthModule } from '@/health/health.module';
@@ -24,7 +24,7 @@ import { TransactionsModule } from '@/transactions/transactions.module';
       envFilePath: ['.env'],
       validate: validateEnv,
     }),
-    DbModule,
+    AppTypeOrmModule,
     AuthModule,
     HealthModule,
     AccountsModule,

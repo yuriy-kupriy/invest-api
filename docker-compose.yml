@@ -219,6 +219,96 @@ services:
       postgres:
         condition: service_healthy
 
+  # ── Course project: the application itself (profile `app`) ────────────────
+  # `npm run compose:up` generates .compose/ (gitignored) and runs
+  # `docker compose --profile app up -d --wait --build`. Without the profile the
+  # stack stays infra-only, so every homework's `docker compose up -d --wait`
+  # plus `npm start` on the host keeps working on port 3000.
+  # One image (docker/Dockerfile, distroless — its entrypoint is node), four roles.
+  migrate:
+    <<: &app
+      profiles: [app]
+      image: invest-api:compose
+      build:
+        context: .
+        dockerfile: docker/Dockerfile
+        secrets: [npm_token]
+      env_file: [.compose/env]
+      environment:
+        NODE_ENV: development
+        DB_URL: postgres://postgres@pgbouncer:6432/invest
+        DB_PASSWORD_FILE: /run/secrets/db_password
+        BROKER_URL: amqp://app:app@rabbitmq:5672
+        REDIS_URL: redis://redis-cache:6379
+        REDIS_QUEUE_URL: redis://redis-queue:6379
+        # shortcut: presigned URLs name the in-network host minio:9000, so uploads
+        # from the host need it in /etc/hosts; files are not on the main contour.
+        STORAGE_ENDPOINT: http://minio:9000
+        STORAGE_ACCESS_KEY: hw26user
+        STORAGE_SECRET_KEY: hw26secretpass
+        STORAGE_BUCKET: hw26-files
+        FX_SYNC_ON_START: '0'
+      secrets: [db_password]
+    command: ['node_modules/typeorm/cli.js', 'migration:run', '-d', 'dist/data-source.js']
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+
+  seed:
+    <<: *app
+    command: ['dist/seed-dev.js']
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  api:
+    <<: *app
+    ports:
+      - '${API_HOST_PORT:-3000}:3000'
+    healthcheck:
+      # No shell or curl in distroless: node itself asks readiness.
+      test: ['CMD', '/nodejs/bin/node', '-e', "fetch('http://127.0.0.1:3000/health/ready').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  relay:
+    <<: *app
+    command: ['dist/outbox-relay.js']
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+  consumer:
+    <<: *app
+    command: ['dist/order-receipts-consumer.js']
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+secrets:
+  db_password:
+    file: .compose/db_password
+  npm_token:
+    file: .compose/npm_token
+
 volumes:
   pgdata:
   pgadmin_data:

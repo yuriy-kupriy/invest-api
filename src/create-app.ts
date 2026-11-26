@@ -27,14 +27,18 @@ export async function createApp(options: CreateAppOptions = {}): Promise<INestAp
   // validator would 404 it) and outside the RED counter it reports.
   server.get('/metrics', metricsHandler);
   server.use(metricsMiddleware);
-  server.use(express.json());
+  // The trade webhook's HMAC is over the bytes as sent, not over a re-serialised object.
+  server.use(express.json({ verify: (req, _res, buf) => ((req as { rawBody?: Buffer }).rawBody = buf) }));
   // After body parsing: the parser's stream callbacks would not carry our ALS store.
   server.use(requestContextMiddleware);
   server.use(
     OpenApiValidator.middleware({
       apiSpec: join(__dirname, '..', 'openapi', 'openapi.yaml'),
       validateRequests: true,
-      validateResponses: true,
+      // Re-validating every response body costs CPU on each request; dev, test and
+      // CI catch spec drift, production trusts what they already proved.
+      // main.ts has run validateEnv before this, so NODE_ENV is a known value.
+      validateResponses: process.env.NODE_ENV !== 'production',
       // The spec documents bearerAuth, but JwtAuthGuard is the one authority on
       // tokens: two checkers would answer 401 with two different bodies.
       validateSecurity: false,
