@@ -43,9 +43,9 @@
 | 4 | Ресурси мають власника, є привілейована роль | рахунок належить користувачу (403 на чужий), запис лише для `member` (`demo:rbac`) |
 | 5 | Робота, яку варто зробити поза запитом | `order.placed` → RabbitMQ → квитанція; лист-квитанція в BullMQ з retries |
 | 6 | Подія, яку власник хоче бачити одразу | статус замовлення через socket.io-кімнату й SSE з `Last-Event-ID` |
-| 7 | Зовнішній провайдер або файли | курси НБУ на старті; виписки/файли через presigned URL у MinIO. Вебхука провайдера немає — див. [Чесні межі](#чесні-межі) |
+| 7 | Зовнішній провайдер або файли | вебхук брокера «угоду розраховано» з HMAC-підписом (`POST /webhooks/trades`); курси НБУ на старті; файли через presigned URL у MinIO |
 
-Закрито 7 із 7 рядків; сьомий — без вебхука.
+Закрито 7 із 7 рядків.
 
 ### Схема
 
@@ -84,26 +84,53 @@ Swagger UI на `/docs`.
 
 ## Головний наскрізний контур
 
-**Сценарій: транзакція (замовлення) від створення до фінального статусу.**
+**Сценарій: купівля інструмента — від checkout до розрахованої угоди.**
+
+```
+POST /transactions/checkout ──COMMIT──> transactions(buy, posted) + accounts.balance − cost + outbox(order.placed)
+        │                                         │
+        │                         relay (SKIP LOCKED, confirm) → RabbitMQ → consumer (ack після ефекту)
+        │                                         └──> order_receipts           ← фон
+        │   брокер: POST /webhooks/trades (HMAC, dedup event_id, сума = заморожена)
+        │                                         └──> order_settlements        ← зовнішня подія
+GET /orders/{id} → status, receipt_issued_at, settled_at                         ← повторне читання
+```
 
 | # | Ланка | Як проходить | Доказ |
 |---|---|---|---|
-| 1 | Клієнт викликає API | `POST /auth/login` → `POST /accounts` → `POST /transactions` | `test/e2e/app.e2e-spec.ts` |
-| 2 | Валідація | OpenAPI-валідатор + `ValidationPipe`; без `Idempotency-Key` → 400 problem+json | e2e «rejects … without Idempotency-Key» |
-| 3 | Права доступу | JWT ES256 (401), роль `member` гардом і власник рахунку в сервісі (403) | `npm run demo:rbac` |
-| 4 | Бізнес-логіка | батч проводок атомарно, валюта = валюта рахунку, перехід `pending → posted` міняє баланс під `FOR UPDATE` | e2e «writes nothing when a later entry … is rejected» |
-| 5 | Збереження | Postgres через PgBouncer, схема під міграціями TypeORM | `npm run migrate:revert && npm run migrate` |
-| 6 | Фонова обробка | checkout → outbox тим самим COMMIT → relay → RabbitMQ → споживач пише квитанцію; лист — у BullMQ | `npm run demo:outbox`, `demo:crash-relay`, `demo:queue` |
-| 7 | Повторне читання | `GET /transactions/{id}`, `GET /accounts/{id}` (баланс); статус — SSE `GET /orders/{id}/events` | e2e «creates a transaction and reads the same record back» |
+| 1 | Клієнт викликає API | `POST /auth/login` → `POST /transactions/checkout` з `Idempotency-Key` | `npm run demo:contour` (`login=200 checkout=201`) |
+| 2 | Валідація | OpenAPI-валідатор + `ValidationPipe`; `quantity: 0` → 400 problem+json | `demo:contour` (`invalid=400`) |
+| 3 | Права доступу | JWT ES256 (401), роль `member` гардом і власник рахунку в сервісі (403) | `demo:contour` (`anon=401`), `npm run demo:rbac` |
+| 4 | Бізнес-логіка | атомарний `UPDATE … WHERE balance_cents >= cost`; нестача коштів → 422 і відкат; повтор ключа → те саме замовлення | `demo:contour` (`debited=3000 replay-same-order=1`), `npm run demo:race` |
+| 5 | Збереження | Postgres через PgBouncer, схема під міграціями TypeORM; дані переживають рестарт API | `docker compose restart api` → той самий `GET /orders/{id}` |
+| 6 | Фонова обробка | outbox тим самим COMMIT → relay → RabbitMQ → споживач видає квитанцію | `demo:contour` (`receipt-by-background=1`), `demo:crash-relay` |
+| 7 | Повторне читання | `GET /orders/{id}`: `status`, `receipt_issued_at`, `settled_at`; статус наживо — SSE `GET /orders/{id}/events` | `demo:contour` (`final-status=posted settled=1`) |
 | 8 | Логи й моніторинг | один `trace_id` на всі рядки запиту, RED-метрики, трейс у Jaeger | `npm run demo:logs`, `demo:metrics`, `demo:trace` |
-| 9 | Автотест | e2e на AppModule + integration проти справжнього Postgres | `npm run test:e2e`, `npm run test:integration` |
+| 9 | Автотест | e2e «places an order, reads it back, and settles it once through the signed webhook» + integration проти справжнього Postgres | `npm run test:e2e`, `npm run test:integration` |
 | 10 | Розгорнуте середовище | Pulumi → kind; конвеєр `deploy.yml` деплоїть digest, зібраний у PR, і міряє rollout | `npm run demo:rollout` (`failed=0`), зелений прогін `deploy` в Actions |
-
-Ланка 6 поки що запускається демо-скриптами, а не з HTTP-запиту, — див. [Чесні межі](#чесні-межі).
 
 ---
 
 ## Запуск
+
+### Усе в Docker — одна команда
+
+```bash
+npm run compose:up      # інфра + migrate + seed + api + relay + consumer, чекає healthy
+npm run demo:contour    # головний контур на запущеному сервісі, exit 0 / 1
+npm run compose:down    # зупинити й прибрати томи
+```
+
+[`scripts/compose-up.sh`](scripts/compose-up.sh) на першому запуску генерує `.compose/` (у `.gitignore` і
+`.dockerignore`): одноразову пару ES256, pepper, ключ вебхука й пароль рев'юера. Далі —
+`docker compose --profile app up -d --wait --build`. Без профілю `app` compose лишається
+інфраструктурою, тож `## Grading` кожного ДЗ працює як раніше. API — <http://localhost:3000>, Swagger — `/docs`.
+Логін рев'юера: `reviewer@example.com`, пароль — `grep DEV_USER_PASSWORD .compose/env`
+(рахунок `00000099-0000-4000-8000-0000000000a1`, інструмент `00000099-0000-4000-8000-0000000000b1`).
+
+Потрібні лише Docker (Compose ≥ 2.17) і Node ≥ 18 для `demo:contour`. Сховище секретів не потрібне.
+
+### API на хості (для демо ДЗ)
 
 Сховище секретів (Infisical) у рев'юера недоступне, тому `SKIP_VAULT=1` перемикає
 [`scripts/with-secrets.sh`](scripts/with-secrets.sh) на прямий `exec`, а значення приходять `export`-ом.
@@ -135,7 +162,9 @@ npm start                            # http://localhost:3000 · /docs · /health
 
 | Що перевірити | Команда |
 |---|---|
-| Головний контур end-to-end | `npm run test:e2e` |
+| Головний контур на запущеному стеку | `npm run compose:up && npm run demo:contour` |
+| Головний контур end-to-end у тесті | `npm run test:e2e` |
+| Вебхук брокера: підпис, дедуп, сума | `npm run demo:webhook` |
 | Integration проти справжньої БД (двічі поспіль) | `npm run test:integration && npm run test:integration` |
 | Гонка 50 checkout-ів | `npm run demo:race` |
 | Ідемпотентність і outbox | `npm run demo:outbox`, `demo:crash-write`, `demo:crash-relay` |
@@ -185,7 +214,7 @@ npm start                            # http://localhost:3000 · /docs · /health
 | 11.1 | Конфіг падає на старті | курсу | `ConfigModule` + zod, `.env.example` + `check:env` | прибрати змінну → exit ≠ 0 з її назвою | ✅ |
 | 11.1 | Схема, API-опис, runbook | курсу | Mermaid вище, OpenAPI, [Запуск](#запуск) | — | ✅ |
 | 11.1 | OWASP Top 10:2025 (+) | — | таблиця нижче | [OWASP](#owasp-top-102025) | ✅ |
-| 11.2 | Контур end-to-end | курсу | транзакція `pending → posted`, читання окремим запитом | `npm run test:e2e` | ✅ |
+| 11.2 | Контур end-to-end | курсу | checkout → квитанція у фоні → розрахунок вебхуком → `GET /orders/{id}` | `npm run demo:contour` | ✅ |
 | 11.2 | Правило під конкуренцією | курсу | атомарний `UPDATE … WHERE balance_cents >= $2 RETURNING` | `npm run demo:race` | ✅ |
 | 11.2 | Контракт, який звіряє машина | курсу (варіант Б) + Pact | `express-openapi-validator` з `validateResponses`; Pact + can-i-deploy; `oasdiff` у CI | `npm run lint:spec`, `npm run verify:provider` | ✅ |
 | 11.2 | Повтор не дає другого ефекту | курсу | `Idempotency-Key` на краю; ключ платежу від `order_id`, `ON CONFLICT` | `npm run demo:outbox` | ✅ |
@@ -198,13 +227,13 @@ npm start                            # http://localhost:3000 · /docs · /health
 | 11.4 | Авторизація | курсу | `RolesGuard` + `assertOwner` у сервісі; власник перед join у кімнату | `npm run demo:rbac`, `realtime-demo.mjs` | ✅ |
 | 11.4 | Валідація, єдиний формат помилок | курсу | OpenAPI-валідатор + class-validator, problem+json | e2e 400 | ✅ |
 | 11.4 | Секрети поза кодом / git / образом | курсу | Infisical, `.env` у `.gitignore`, BuildKit secret | `npm run demo:image` (`token-in-layers=0`) | ✅ |
-| 11.4 | Захист краю | курсу | rate-limit у Redis (429 + `Retry-After`); вебхука немає | `npm run demo:ratelimit` | ⚠️ |
+| 11.4 | Захист краю | курсу | rate-limit у Redis (429 + `Retry-After`); вебхук брокера: HMAC над сирим тілом + `timingSafeEqual`, дедуп `event_id` у Postgres, сума = заморожена, append-only `order_settlements` | `npm run demo:ratelimit`, `npm run demo:webhook` | ✅ |
 | 11.4 | Сховище секретів, ротація (+) | курсу | Infisical dev/prod, `rotate.sh` без рестарту | [ДЗ #2](#ротація-пароля-бд-без-рестарту) | ✅ |
-| 11.5 | Реальна фонова частина | курсу | RabbitMQ-споживач `order.placed`, BullMQ з retries | `npm run demo:publish`, `demo:queue` | ⚠️ |
+| 11.5 | Реальна фонова частина | курсу | RabbitMQ-споживач `order.placed` видає квитанцію, `GET /orders/{id}` її показує; BullMQ з retries | `demo:contour` (`receipt-by-background=1`), `demo:queue` | ✅ |
 | 11.5 | Подія не губиться й не дублюється | курсу | outbox + relay на `SKIP LOCKED`, confirms, ручний ack, дедуп у БД | `demo:crash-write`, `demo:crash-relay`, `demo:duplicate` | ✅ |
 | 11.5 | Конкурентна обробка, DLQ | курсу | воркер-пул на `SKIP LOCKED`, retry лише 40001/40P01, DLX | `npm run demo:workers`, `demo:retry`, `demo:dlq` | ✅ |
 | 11.5 | Realtime | курсу | socket.io-кімнати + SSE з `Last-Event-ID` | `node scripts/realtime-demo.mjs` | ✅ |
-| 11.6 | Локальний запуск однією командою | курсу | compose з healthcheck і `--wait` для залежностей; сам API стартує `npm start` | [Запуск](#запуск) | ⚠️ |
+| 11.6 | Локальний запуск однією командою | курсу | compose-профіль `app`: migrate і seed як one-shot (`service_completed_successfully`), api з healthcheck на `/health/ready`, relay, consumer; секрети генеруються локально | `npm run compose:up` | ✅ |
 | 11.6 | Production-образ | курсу | multi-stage, distroless, non-root, BuildKit secret, Trivy з порогом | `npm run demo:image`, `npm run scan` | ✅ |
 | 11.6 | Розгортання кодом | курсу | Pulumi → kind, `maxUnavailable: 0`, PDB, HPA, дві проби | `npm run demo:rollout` (`failed=0`), `demo:pdb` | ✅ |
 | 11.6 | Поза локальною машиною | курсу (ДЗ 22) | `deploy.yml`: digest із PR → kind у раннері → rollout | зелений прогін `deploy` в Actions, артефакт `pipeline-evidence` | ✅ |
@@ -252,6 +281,7 @@ npm start                            # http://localhost:3000 · /docs · /health
 | 2026-11-10 | Redis: кеш, сесії, rate-limit, BullMQ; файли через presigned URL і edge | байти файлів не мають іти через Node; ліміт мусить бути спільним для інстансів |
 | 2026-11-16 | distroless-образ, Pulumi на kind, rollout з `failed=0`; pino + OTel + RED + Grafana | деплой кодом і без втрачених відповідей; один ключ від логу до трейсу |
 | 2026-11-22 | CI/CD: гейти в обидва боки, build once + promote за digest, OIDC-гейт, деплой у kind із конвеєра | деплоїть конвеєр, а не я; прод отримує саме той образ, що пройшов скан |
+| 2026-11-26 | checkout виведено в `POST /transactions/checkout`, `GET /orders/{id}` показує квитанцію й розрахунок; вебхук брокера з HMAC; API, relay і consumer — у compose-профілі `app` | головний контур мусить проходити запитами на запущеному сервісі, а не лише демо-скриптами |
 
 ---
 
@@ -266,7 +296,7 @@ npm start                            # http://localhost:3000 · /docs · /health
 | A05 Injection | так | лише параметризовані запити (`$1`), TypeORM QueryBuilder; вхід звіряє OpenAPI-валідатор |
 | A06 Insecure Design | так | інваріанти в БД (FK, CHECK, атомарний decrement), ідемпотентність незворотних операцій, outbox |
 | A07 Authentication Failures | так | короткий access, ротація refresh із відкликанням сім'ї при повторі, логаут відкликає обидва (`demo:reuse`) |
-| A08 Software or Data Integrity Failures | частково | OIDC-гейт перевіряє підпис ID-токена перед деплоєм; вебхуків із підписом немає — немає й провайдера |
+| A08 Software or Data Integrity Failures | так | OIDC-гейт перевіряє підпис ID-токена перед деплоєм; вебхук брокера приймається лише з HMAC над сирим тілом і звіряє суму із замороженою |
 | A09 Security Logging & Alerting Failures | частково | структурні логи з `trace_id`, `redact` токенів і паролів, лог відкликання сім'ї; алертів немає — це навчальний стенд |
 | A10 Mishandling of Exceptional Conditions | так | єдиний problem+json, нестача коштів відкочує транзакцію цілком, retry лише на 40001/40P01, DLQ для отруєних повідомлень |
 
@@ -274,12 +304,12 @@ npm start                            # http://localhost:3000 · /docs · /health
 
 ## Чесні межі
 
-- **Checkout і outbox не виведені в HTTP.** `checkout()` ([`src/concurrency/checkout.ts`](src/concurrency/checkout.ts))
-  викликають демо-скрипти, тож ланка 6 контуру доводиться `demo:outbox` / `demo:crash-relay`, а квитанцію
-  (`order_receipts`) не прочитати окремим API-запитом.
-- **Сам API не в `docker-compose.yml`.** Compose піднімає залежності з `--wait`, застосунок стартує
-  `npm start` з `export`-ами з [Запуску](#запуск); у кластері він їде образом через Pulumi.
-- **Вебхука зовнішнього провайдера немає** — платіжного провайдера в домені немає, тож `demo:webhook` відсутній.
+- **Брокер — власний адаптер, не справжній провайдер.** Вебхук приймає подію в форматі, який задав я
+  (`sha256=<hex>` у `X-Signature`). Немає ротації ключа й часової мітки в підписі: перехоплений запит,
+  повторений пізніше, не відкидається як прострочений, але другого ефекту не дає — це дубль за `event_id`,
+  а підробити новий `event_id` без ключа не можна.
+- **Presigned URL у compose-стеку** вказують на `minio:9000` — ім'я всередині мережі Docker; для завантаження
+  файлів із хоста потрібен запис у `/etc/hosts`. Файли не входять у головний контур.
 - **SSE-стрім статусу публічний**: `EventSource` не шле `Authorization`, `order_id` — uuid, payload — лише
   `{id, status}`. Перед розширенням payload — cookie або короткоживучий ticket.
 - **Буфер realtime-подій у пам'яті процесу** — на двох інстансах SSE-реконект на інший під не докачає
@@ -451,6 +481,8 @@ OpenApiValidator.middleware({
 `validateRequests` відхиляє все, що суперечить спеці, **на вході** — включно з відсутнім
 `Idempotency-Key`, порожнім `entries` і зайвими полями в тілі. `validateResponses` — рантайм-аналог
 `contract/check.mjs` з лекції: він фізично не дає віддати відповідь, що суперечить спеці.
+У `NODE_ENV=production` `validateResponses` вимкнено (зараз так налаштовано в `create-app.ts`):
+перевірка кожного тіла відповіді коштує CPU, а розбіжність зі спекою ловлять dev, тести й CI.
 
 Порядок middleware має значення:
 
@@ -764,8 +796,8 @@ Health-ендпоїнти (обидва описані у спеці, тож і�
 
 ## Ротація пароля БД без рестарту
 
-Пароль ніколи не буває змінною середовища. Пул створюється у [`db.module.ts`](src/db/db.module.ts)
-з паролем-**функцією**:
+Пароль ніколи не буває змінною середовища. Єдиний пул застосунку — пул TypeORM; у
+[`data-source.ts`](src/data-source.ts) він отримує пароль-**функцію** через `extra`:
 
 ```ts
 password: async () => (await readFile(absolutePath, 'utf8')).trim(),
@@ -791,8 +823,8 @@ curl -s localhost:3000/health | jq .uptime_seconds     # більше за по�
 3. `pg_terminate_backend` для решти зʼєднань ролі — старі клієнти рвуться, пул відкриває нові вже
    з новим паролем.
 
-Після кроку 3 пул емітить `'error'` на вбитих клієнтах. Обробник `pool.on('error', …)` у
-`db.module.ts` **обовʼязковий**: без нього це unhandled `'error'` і процес падає — це не баг
+Після кроку 3 пул емітить `'error'` на вбитих клієнтах. Обробник `pool.on('error', …)` (TypeORM
+вішає його сам) **обовʼязковий**: без нього це unhandled `'error'` і процес падає — це не баг
 ротації, це відсутній обробник.
 
 **Пастка `docker compose down -v`.** Том стирається, Postgres переінʼється з `db/init.sql` і
@@ -825,7 +857,7 @@ docker history --no-trunc myapp | grep -i password      # порожньо
 |---|---|
 | `src/config/env.schema.ts` | zod-схема — єдине джерело правди про змінні |
 | `src/config/env.validation.ts` | `validate` для `ConfigModule`: усі помилки одним списком |
-| `src/db/db.module.ts` | `pg.Pool` з паролем-функцією + `pool.on('error')` |
+| `src/data-source.ts` | пул TypeORM з паролем-функцією (`extra.password`) |
 | `src/health/` | `/health` (uptime) і `/health/db` (реальний запит у БД) |
 | `.env.example` | контракт змінних у git, значення фейкові |
 | `scripts/check-env-example.mjs` | звірка `.env.example` зі схемою (`npm run check:env`) |

@@ -151,6 +151,13 @@ export const envSchema = z.object({
   STORAGE_ACCESS_KEY: z.string().min(1),
   STORAGE_SECRET_KEY: z.string().min(1),
   STORAGE_BUCKET: z.string().min(3),
+
+  /**
+   * Course project. HMAC-SHA256 key the broker signs trade-settlement webhooks
+   * with. Optional so earlier homework runs keep booting; unset => the webhook
+   * answers 503 instead of accepting unsigned events.
+   */
+  TRADE_WEBHOOK_SECRET: z.string().min(16).optional().or(z.literal('').transform(() => undefined)),
 });
 
 /** The storage slice, parsed on its own by scripts that do not boot Nest (edge, demo:cdn). */

@@ -30,3 +30,6 @@ graphify-out/
 .pulumi/
 infra/Pulumi.*.yaml
 infra/node_modules/
+
+# Course project: locally generated compose secrets (scripts/compose-up.sh)
+.compose/

@@ -12,7 +12,7 @@ import {
   TransactionBatch,
   TransactionPage,
   TransactionResponse,
-  TransactionType,
+  SIGN,
 } from '@/domain/transaction';
 import { logger } from '@/observability/logger';
 import { toTransaction } from '@/shared/mappers';
@@ -20,15 +20,6 @@ import { decodeCursor, encodeCursor } from '@/shared/pagination';
 import { problem } from '@/shared/problem.exception';
 import { CreateTransactionsDto } from './dto/create-transactions.dto';
 import { TransactionsRepository } from './transactions.repository';
-
-export const SIGN: Record<TransactionType, 1 | -1> = {
-  income: 1,
-  transfer_in: 1,
-  sell: 1,
-  expense: -1,
-  transfer_out: -1,
-  buy: -1,
-};
 
 const log = logger.child({ layer: 'transactions.service' });
 

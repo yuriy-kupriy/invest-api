@@ -6,6 +6,7 @@ import { DataSource } from 'typeorm';
 import { hashPassword } from '@/auth/password';
 import { createApp } from '@/create-app';
 import { readiness } from '@/health/readiness';
+import { signTradeEvent } from '@/orders/trade-settlement.service';
 
 /**
  * Boots the real request pipeline — OpenApiValidator (request + response) →
@@ -258,6 +259,18 @@ describe('invest-api (e2e)', () => {
     expect(res.body.node_env).toBe('test');
   });
 
+  it('answers GET /health/db through the TypeORM pool', async () => {
+    // health_probe comes from db/init.sql (compose), not from the migrations this DB was built with.
+    await app
+      .get<DataSource>(getDataSourceToken())
+      .query(`CREATE TABLE IF NOT EXISTS health_probe (id smallint PRIMARY KEY, checked_at timestamptz NOT NULL DEFAULT now())`);
+    const res = await api().get('/health/db');
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('ok');
+    expect(res.body.pool_total).toBeGreaterThanOrEqual(1);
+  });
+
   it('turns /health/ready red while draining, and leaves liveness green', async () => {
     expect((await api().get('/health/ready')).status).toBe(200);
 
@@ -293,5 +306,37 @@ describe('invest-api (e2e)', () => {
       .post('/auth/refresh')
       .send({ refresh_token: rotated.body.refresh_token });
     expect(r2.status).toBe(401);
+  });
+
+  it('places an order, reads it back, and settles it once through the signed webhook', async () => {
+    const voo = '00000003-0000-4000-8000-000000000003';
+    const placed = await api()
+      .post('/transactions/checkout')
+      .set('Idempotency-Key', randomUUID())
+      .send({ account_id: cashAccountId, instrument_id: voo, quantity: 2, unit_price_cents: 1500 })
+      .expect(201);
+    expect(placed.body).toMatchObject({ status: 'posted', amount_cents: 3000, receipt_issued_at: null, settled_at: null });
+
+    const orderId = placed.body.id;
+    const read = await api().get(`/orders/${orderId}`).expect(200);
+    expect(read.body.id).toBe(orderId);
+
+    const hook = (body: object, signature?: string) => {
+      const raw = JSON.stringify(body);
+      return request(app.getHttpServer())
+        .post('/webhooks/trades')
+        .set('content-type', 'application/json')
+        .set('X-Signature', signature ?? signTradeEvent(process.env.TRADE_WEBHOOK_SECRET!, raw))
+        .send(raw);
+    };
+    const event = { event_id: randomUUID(), order_id: orderId, amount_cents: 3000 };
+
+    expect((await hook(event, signTradeEvent('forged-secret-forged', JSON.stringify(event)))).status).toBe(401);
+    expect((await hook({ ...event, event_id: randomUUID(), amount_cents: 2999 })).status).toBe(422);
+    expect((await hook(event)).body.outcome).toBe('settled');
+    expect((await hook(event)).body.outcome).toBe('duplicate');
+
+    const settled = await api().get(`/orders/${orderId}`).expect(200);
+    expect(settled.body.settled_at).not.toBeNull();
   });
 });

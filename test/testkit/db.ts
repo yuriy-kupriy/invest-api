@@ -21,6 +21,7 @@ import { JobQueue1789922194647 } from '../../src/migrations/1789922194647-JobQue
 import { Auth1790000000000 } from '../../src/migrations/1790000000000-Auth';
 import { OrderReceipts1790100000000 } from '../../src/migrations/1790100000000-OrderReceipts';
 import { Outbox1790200000000 } from '../../src/migrations/1790200000000-Outbox';
+import { OrderSettlements1790400000000 } from '../../src/migrations/1790400000000-OrderSettlements';
 
 const ENTITIES = [User, Account, Currency, Instrument, Category, FxRate, Transaction, Job];
 
@@ -40,6 +41,7 @@ const MIGRATIONS = [
   Auth1790000000000,
   OrderReceipts1790100000000,
   Outbox1790200000000,
+  OrderSettlements1790400000000,
 ];
 
 /** Every table the suites write to, ordered for readability — CASCADE does the real work. */
@@ -56,9 +58,8 @@ export async function startPg(): Promise<StartedPostgreSqlContainer> {
 
 /**
  * Hands the running container to everything that reads connection info from
- * process.env — TypeORM via the discrete DB_HOST/... branch of
- * resolveConnection(), and the pg.Pool in src/db/db.module.ts via
- * DB_URL + DB_PASSWORD_FILE.
+ * process.env — resolveConnection() in src/data-source.ts takes the discrete
+ * DB_HOST/... branch; DB_URL + DB_PASSWORD_FILE still have to pass envSchema.
  *
  * DB_URL is written WITHOUT the password on purpose: envSchema refuses a URL
  * that carries one (the password belongs in a file so rotation needs no

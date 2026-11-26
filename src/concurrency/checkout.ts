@@ -94,30 +94,42 @@ interface DebitRow {
 }
 
 /**
- * The guard. One statement is the check *and* the row lock: rows whose balance
- * is too small simply do not match, so the UPDATE reports 0 rows and there is no
- * window between reading the balance and writing it. A SELECT … FOR UPDATE
+ * The guard. One statement is the check *and* the row lock: a debit the balance
+ * cannot cover simply does not match, so the UPDATE reports 0 rows and there is
+ * no window between reading the balance and writing it. A SELECT … FOR UPDATE
  * followed by an UPDATE would be correct too, but it needs two round trips and
  * puts the comparison in JavaScript, where a stale read can survive.
+ *
+ * Only a debit is guarded: a credit always applies, even to a balance that
+ * expenses already took below zero. Returns undefined when nothing matched —
+ * no such account, or a debit the balance does not cover.
  */
-async function debitAccount(
+export async function applyBalanceDelta(
   manager: EntityManager,
   accountId: string,
-  costCents: number,
-): Promise<DebitRow> {
+  deltaCents: number,
+): Promise<DebitRow | undefined> {
   // TypeORM's postgres driver returns [rows, affectedRowCount] for UPDATE and
   // DELETE (plain `rows` for SELECT and INSERT), so destructure rather than
   // treating the result as a row array — `result.length` on the tuple is 2 even
   // when the statement matched nothing.
   const [rows, affected]: [DebitRow[], number] = await manager.query(
-    `UPDATE accounts SET balance_cents = balance_cents - $2
-     WHERE id = $1 AND balance_cents >= $2
+    `UPDATE accounts SET balance_cents = balance_cents + $2
+     WHERE id = $1 AND ($2 >= 0 OR balance_cents + $2 >= 0)
      RETURNING balance_cents, currency`,
-    [accountId, costCents],
+    [accountId, deltaCents],
   );
+  return affected > 0 ? rows[0] : undefined;
+}
 
-  if (affected > 0) {
-    return rows[0];
+async function debitAccount(
+  manager: EntityManager,
+  accountId: string,
+  costCents: number,
+): Promise<DebitRow> {
+  const debited = await applyBalanceDelta(manager, accountId, -costCents);
+  if (debited) {
+    return debited;
   }
 
   // Zero rows is either "not enough money" or "no such account" — tell them
