@@ -1816,7 +1816,8 @@ bash scripts/can-i-deploy.sh invest-web no-such-ver prod
 
 ## CI
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) — дві джоби:
+З ДЗ #32 ці дві джоби живуть у [`.github/workflows/pr.yml`](.github/workflows/pr.yml) поруч із гейтами й деплоєм
+(окремого `ci.yml` більше немає, див. `## CI/CD` нижче):
 
 - **test** — `npm ci` → `npx tsc --noEmit` → `test:integration` → `test:e2e`. Service-контейнерів немає: обидві сюїти піднімають Postgres самі.
 - **contract** (`needs: test`) — брокер → `test:contract` → звірка шляхів зі спекою → publish → `verify:provider` з `publishVerificationResult: true` → тег `prod` → **`can-i-deploy`**, який валить джобу, якщо `deployable` не `true`.
@@ -3342,3 +3343,177 @@ Docker Desktop. Годинник: `date +%s` хоста і контейнера 
 ### Не входить
 
 Доставка логів у Loki, алерти, tail-based sampling, Sentry/GlitchTip, другий сервіс (бонуси без балів).
+
+---
+
+# ДЗ #32 курсового: CI/CD — гейти, build once, OIDC без ключа, деплой у kind із конвеєра
+
+Усе з ДЗ #28 (образ → скан → kind → `pulumi up` → `demo:rollout`) тепер запускає конвеєр, а не я. Кожне місце
+конвеєра вміє сказати «ні», і PR не зливається, поки хоч одне каже «ні». Хмари немає: OIDC-варіант 1. GitHub
+виписує ID-токен, мій гейт перевіряє його підпис по `jwks_uri` і умову з [`oidc/policy.json`](oidc/policy.json),
+і тільки тоді пускає деплой.
+
+## Grading
+
+Локальні демо не ходять у GitHub і не потребують кластера (крім сходинки 4 `demo:gates`: це той самий `npm run scan`
+із #28, тож потрібні `trivy` і локальний образ `invest-api:hw28`). Сходинка 2 запускає `oasdiff` з образу,
+запіненого за digest, тож потрібен docker або `oasdiff` у `PATH`. `gate:cost` потребує Node ≥ 22.6 (`--experimental-strip-types`).
+
+```bash
+git clone https://github.com/yuriy-kupriy/invest-api.git && cd invest-api && git checkout hw-32
+npm ci
+export SKIP_VAULT=1            # у грейдера немає доступу до сховища
+export DB_PASSWORD=hw32-grader-db-password   # ← імена — з таблиці «Змінні зі сховища» нижче
+printf 'dummy-npm-token' > .npm_token && npm run image:build   # образ для сходинки 4, як на #28
+npm run demo:gates             # чотири сходинки, обидва боки
+npm run demo:oidc              # три випадки перевірки токена
+PLAN_JSON=/tmp/hw32/plan.json COST_BUDGET_USD=0      npm run gate:cost   # gate=fail, exit 1
+PLAN_JSON=/tmp/hw32/plan.json COST_BUDGET_USD=999999 npm run gate:cost   # gate=pass, exit 0
+```
+
+`/tmp/hw32/plan.json` — з артефакту `pipeline-evidence` прогону (`gh run download … -n pipeline-evidence`).
+Пакет `ghcr.io/yuriy-kupriy/invest-api` публічний, тож `docker buildx imagetools inspect` звіряє digest без логіну.
+
+## CI/CD
+
+### Джоби і залежності
+
+```
+pr.yml (pull_request, workflow_dispatch)
+  gates ──┬──> build (єдина збірка, push у GHCR, outputs.digest) ──> scan gate ─┐
+          ├──> oidc  (id-token: write, environment: kind, oidc-gate) ───────────┤
+test ──> contract (Pact + can-i-deploy) ────────────────────────────────────────┤
+                                                                                v
+                        deploy-kind: kind → pulumi preview → gate:cost → pulumi up (image@digest)
+                                     → deployment.json → secret-in-manifest → demo:rollout (failed=0)
+                                                                                v
+                        evidence (if: always()) → артефакт pipeline-evidence
+
+deploy.yml (push у main, workflow_dispatch)
+  resolve (digest образу, зібраного в PR, за тегом head SHA; нічого не збирає)
+     → oidc → deploy-kind (той самий composite) → pipeline-evidence
+```
+
+| Сходинка / гейт | Інструмент | Що ловить | Де |
+|---|---|---|---|
+| 1. Типи й стиль | `tsc --noEmit` + `eslint` ([`eslint.config.mjs`](eslint.config.mjs)) | помилку в моєму коді | `gates` |
+| 2. Контракт | `oasdiff breaking --fail-on ERR` ([`scripts/oasdiff.sh`](scripts/oasdiff.sh)), спека бази PR проти спеки голови | «цей PR зламав того, хто вже живе на v1» | `gates` |
+| 3. Архітектура | `dependency-cruiser` ([`.dependency-cruiser.cjs`](.dependency-cruiser.cjs)) | заборонений імпорт між модулями | `gates` |
+| 4. Образ | `npm run scan` (#28, поріг без змін) | знахідки вище порога | `build` |
+| OIDC | [`scripts/oidc-gate.mjs`](scripts/oidc-gate.mjs) | чужий `sub`, підробний підпис, чужий `aud`/`iss`, прострочений токен | `oidc` |
+| Вартість | [`src/mapping.ts`](src/mapping.ts) + [`scripts/gate-cost.mjs`](scripts/gate-cost.mjs) | план дорожчий за бюджет | `deploy-kind` |
+| Нуль збоїв | `demo:rollout` (#28), `MIN_REQUESTS=2000` | хоч одну невдалу відповідь під час викочування | `deploy-kind` |
+
+Що саме означає «модулі не лізуть один в одного» (сходинка 3): `domain/` не імпортує жодного фіче-модуля; модуль
+не імпортує чужий `*.controller` / `*.gateway` (до іншого модуля ходять через сервіс, репозиторій або Nest-модуль);
+циклів немає. Виняток — `entities/`: звʼязки TypeORM двобічні за задумом.
+
+`demo:gates` запускає той самий інструмент двічі: на коректному вході (проєкт / спека проти себе / `src/` / поріг
+99999) і на зламаному з [`gates/fixtures/`](gates/fixtures) (одруковка в полі, спека без `GET /currencies/{code}`,
+`domain/` імпортує контролер, поріг −1). `gates/` виключено з `tsconfig`, щоб зламаний вхід не валив збірку.
+
+### Куди деплоїться
+
+Середовище одне: `kind`. Це GitHub Environment (від нього залежить `sub` токена) і кластер kind `invest`, який
+піднімається в раннері на час джоби. Стан Pulumi лежить у файловому бекенді (`PULUMI_BACKEND_URL=file://…`), конвеєр
+не логіниться в Pulumi Cloud. Образ: `ghcr.io/yuriy-kupriy/invest-api`. Тег `:<head SHA>` для людини, у
+`pulumi config set image` іде `…@sha256:<digest>` з `outputs` джоби `build`, і цей самий digest тягне вузол kind.
+`rev` = digest, тож шаблон пода змінюється разом з образом.
+
+### Секрети конвеєра (GitHub Secrets)
+
+| Імʼя | Навіщо |
+|---|---|
+| `INFISICAL_TOKEN` | (опційно) доступ до сховища (#11), лише читання середовища `dev`. Відкриває сховище, а не хмару чи реєстр |
+| `INFISICAL_PROJECT_ID` | (опційно) проєкт у сховищі |
+| `PACT_BROKER_URL` | (опційно, з #16) адреса хостованого брокера. Без неї джоба піднімає свій |
+| `PACT_BROKER_TOKEN` | (опційно, з #16) токен хостованого брокера |
+| `GITHUB_TOKEN` | видається на джобу. `packages: write` лише в `build` (push у GHCR) |
+
+Ключа хмари і пароля реєстру тут немає взагалі. Реєстр працює через `GITHUB_TOKEN`, «хмара» через OIDC-токен на
+хвилини, і `id-token: write` стоїть лише на джобі `oidc`.
+
+### Змінні зі сховища
+
+Секрети застосунку живуть у сховищі й зʼявляються в момент `pulumi up` (у K8s Secret → `envFrom`/`secretKeyRef`),
+а не під час збірки. Конвеєр отримує їх тією ж обгорткою [`scripts/with-secrets.sh`](scripts/with-secrets.sh): у CI
+вона бачить `INFISICAL_TOKEN` у середовищі кроку і робить `infisical run --env=dev`.
+
+Зараз у цього репо `INFISICAL_TOKEN` не задано, тож перший крок `kind-deploy` генерує **одноразові** значення
+всіх змінних нижче (`node:crypto`, пара ES256 теж нова), реєструє кожне через `::add-mask::` і кладе в оточення
+джоби разом із `SKIP_VAULT=1`. Це той самий шлях, що й у грейдера (`## Grading` ДЗ #28): у GitHub не зберігається
+жоден секрет застосунку, значення живуть лише на раннері цього прогону, у лозі видно тільки `app-secrets=throwaway`.
+Варто додати обидва секрети `INFISICAL_*` (у репо чи в середовище `kind`) — і той самий крок друкує `app-secrets=vault`
+та бере значення зі сховища, без змін у workflow.
+
+| Змінна | Джерело | Навіщо |
+|---|---|---|
+| `DB_URL` | сховище (#11) | роль і база Postgres |
+| `DB_PASSWORD` | сховище (#11) | пароль Postgres |
+| `JWT_KID` | сховище (#11) | `kid` access-токенів |
+| `JWT_PRIVATE_KEY` | сховище (#11) | ключ підпису ES256 (base64 PEM) |
+| `JWT_PUBLIC_KEY` | сховище (#11) | ключ перевірки |
+| `REFRESH_TOKEN_PEPPER` | сховище (#11) | HMAC-ключ refresh-токенів |
+| `STORAGE_REGION` | сховище (#11) | регіон обʼєктного сховища |
+| `STORAGE_BUCKET` | сховище (#11) | бакет |
+| `STORAGE_ACCESS_KEY` | сховище (#11) | ключ доступу до обʼєктного сховища |
+| `STORAGE_SECRET_KEY` | сховище (#11) | секрет доступу до обʼєктного сховища |
+| `PULUMI_CONFIG_PASSPHRASE` | сховище (#11) | ключ шифрування стану Pulumi |
+
+`secret-in-manifest` рахує конвеєр, бо значення є тільки в раннері. [`scripts/secret-count.sh`](scripts/secret-count.sh)
+під обгорткою шукає кожне з цих значень у `deployment.json` і друкує тільки число.
+
+### Межа маскування
+
+GitHub замінює на `***` лише **точне** входження значення, зареєстрованого як секрет. Значення в base64, розрізане
+на частини, з екранованими лапками в JSON або надруковане інструментом у власному форматі (наприклад, `set -x`
+показує розгорнутий рядок команди) маскування не впізнає. Те саме стосується значень зі сховища: їх раннер узагалі
+не знає як секрети. Тому захист тут не маскування, а відсутність місць, де секрет друкується. Немає `echo` секрету,
+`env`, `printenv` чи `set -x`. ID-токен пише у файл `0600` сам `node` (не через `echo` чи argv) і видаляє на виході.
+Гейт друкує `iss`/`aud`/`sub`, а не токен. `secret-count.sh` друкує число. `plan.json` містить `[secret]` замість
+значень K8s Secret. Це шосте місце витоку з ДЗ #11 (git, лог застосунку, шар образу, `docker inspect`,
+`docker history` закрито там, лог конвеєра — тут).
+
+### OIDC
+
+Умова довіри — [`oidc/policy.json`](oidc/policy.json): `iss=https://token.actions.githubusercontent.com`,
+`aud=invest-api-deploy`, `sub` — **точний** рядок `repo:yuriy-kupriy@8182411/invest-api@1346615839:environment:kind`, без шаблонів.
+Форма з ID власника й репозиторію (`OWNER@OWNER-ID/REPO@REPO-ID`) — та, яку GitHub видав цьому репозиторію; рядок
+взято з лога джоби `oidc` першого прогону. Чужий репозиторій з тим самим імʼям має інший ID, тож не пройде навіть після
+перейменування.
+Гейт тягне `<iss>/.well-known/openid-configuration` → `jwks_uri` → ключ за `kid`. Приймає лише `RS256`
+(алгоритм не береться з заголовка на віру). Перевіряє підпис через `node:crypto`, далі `iss`, `aud`, `exp`, `nbf`, `sub`.
+`iss`, `aud`, адреса набору ключів і файл умови — параметри, тому той самий код біжить у `demo:oidc` з моєю
+RSA-парою і моїм JWKS на `127.0.0.1`. Прибери умову на `sub`, і випадок `foreign-sub` дасть `policy-allow=1`.
+
+### Гейт вартості
+
+[`src/mapping.ts`](src/mapping.ts) перекладає `plan.json` (`pulumi preview --json`) у долари на місяць. Ціну мають
+Deployment і StatefulSet: `resources.requests.cpu` і `memory` × `replicas` × ставка × 730 год. Job міграцій живе
+секунди, тож не рахується. Ставки AWS Fargate, Linux/x86, us-east-1, on-demand:
+**$0.04048 за vCPU-годину, $0.004445 за GB-годину** (https://aws.amazon.com/fargate/pricing/).
+Поточний план: 3 × (100m, 160Mi) + 1 × (50m, 64Mi) ≈ **$12.07/міс**. Це baseline в одному файлі [`infra/cost-baseline-usd.txt`](infra/cost-baseline-usd.txt), який читають обидва воркфлоу (через composite `kind-deploy`).
+
+Гейт реагує на зміну, а не на суму: у CI бюджет = baseline + max($10, 20 %). Обхід — лейбл на PR. Тоді гейт
+однаково друкує `gate=fail`, але завершується кодом 0 і пише `bypass=<лейбл>`.
+
+cost-gate-bypass-label: cost-approved
+
+### Артефакт `pipeline-evidence`
+
+Джоба `evidence` (`if: always()`) збирає [`scripts/evidence.sh`](scripts/evidence.sh): `evidence.txt` (ключі
+з контракту ДЗ), `deployment.json`, `plan.json`, `rollout.txt`, `build.log`. Кожне число читається з файла або з
+output джоби: `rollout-*` — з виводу `demo:rollout`, `built-digest` — з `steps.build.outputs.digest`, `deployed-digest` —
+з образу в `deployment.json`, `build-invocations` — `wc -l < build.log`.
+
+## Структура ДЗ #32
+
+| Файл | Що робить |
+|---|---|
+| [`.github/workflows/pr.yml`](.github/workflows/pr.yml) | гейти, тести, контракт, build+scan, OIDC, деплой у kind, артефакт |
+| [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) | promote за digest на push у main / вручну |
+| [`.github/actions/oidc-gate/`](.github/actions/oidc-gate/action.yml), [`.github/actions/kind-deploy/`](.github/actions/kind-deploy/action.yml) | спільні кроки обох воркфлоу |
+| [`scripts/oidc-gate.mjs`](scripts/oidc-gate.mjs), [`scripts/demo-oidc.mjs`](scripts/demo-oidc.mjs), [`oidc/policy.json`](oidc/policy.json) | гейт OIDC і його демо |
+| [`scripts/demo-gates.sh`](scripts/demo-gates.sh), [`gates/fixtures/`](gates/fixtures) | чотири сходинки в обидва боки |
+| [`src/mapping.ts`](src/mapping.ts), [`scripts/gate-cost.mjs`](scripts/gate-cost.mjs) | гейт вартості |
+| [`scripts/secret-count.sh`](scripts/secret-count.sh), [`scripts/evidence.sh`](scripts/evidence.sh) | числа для `evidence.txt` |

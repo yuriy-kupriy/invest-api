@@ -25,6 +25,10 @@ if ! command -v infisical >/dev/null 2>&1; then
   exit 1
 fi
 
+# CI (HW #32): the vault access already came in as job env from GitHub Secrets
+# (INFISICAL_TOKEN, INFISICAL_PROJECT_ID, INFISICAL_API_URL) — no file to source.
+if [ -n "${INFISICAL_TOKEN:-}" ]; then exec infisical run --env="$ENV_SLUG" -- "$@"; fi
+
 if [ ! -f "$CREDS" ]; then
   echo "Missing $CREDS — copy .secrets/infisical.env.example, fill in your project/client" >&2
   echo "credentials for 'infisical login', or set SKIP_VAULT=1 (see README ## Grading)." >&2

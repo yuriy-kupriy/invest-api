@@ -1,0 +1,39 @@
+name: oidc-gate
+description: >
+  Asks GitHub for this job's ID token and runs scripts/oidc-gate.mjs on it:
+  signature against the issuer's JWKS, then iss/aud/sub against oidc/policy.json.
+  The token goes to a 0600 file and is deleted; only the claims are printed.
+  The calling job needs `permissions: id-token: write`.
+inputs:
+  audience:
+    description: aud requested from GitHub (must match oidc/policy.json)
+    default: invest-api-deploy
+outputs:
+  iss: { description: iss claim, value: "${{ steps.gate.outputs.iss }}" }
+  aud: { description: aud claim, value: "${{ steps.gate.outputs.aud }}" }
+  sub: { description: sub claim, value: "${{ steps.gate.outputs.sub }}" }
+  sig-verified: { description: 1 when the signature verified, value: "${{ steps.gate.outputs.sig-verified }}" }
+runs:
+  using: composite
+  steps:
+    - id: gate
+      shell: bash
+      env:
+        AUD: ${{ inputs.audience }}
+      run: |
+        TOKEN_FILE="$RUNNER_TEMP/oidc.jwt"
+        trap 'rm -f "$TOKEN_FILE"' EXIT
+        # Fetched and written by node: the value never passes through echo or argv.
+        node -e '
+          const u = `${process.env.ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${encodeURIComponent(process.env.AUD)}`;
+          fetch(u, { headers: { authorization: `bearer ${process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}` } })
+            .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`token request -> ${r.status}`))))
+            .then((j) => require("fs").writeFileSync(process.argv[1], j.value, { mode: 0o600 }))
+            .catch((e) => { console.error(e.message); process.exit(1); });' "$TOKEN_FILE"
+        set +e
+        node scripts/oidc-gate.mjs --token-file "$TOKEN_FILE" --policy oidc/policy.json > "$RUNNER_TEMP/oidc.txt"
+        rc=$?
+        set -e
+        cat "$RUNNER_TEMP/oidc.txt"
+        grep -E '^(iss|aud|sub|sig-verified)=' "$RUNNER_TEMP/oidc.txt" >> "$GITHUB_OUTPUT"
+        exit "$rc"

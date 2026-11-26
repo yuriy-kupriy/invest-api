@@ -1,0 +1,258 @@
+# HW #32 — pull request pipeline. Every job here can say "no"; the PR merges
+# only when all of them are green. Job graph and secrets: README ## CI/CD.
+name: pr
+
+on:
+  pull_request:
+    # labeled/unlabeled: the cost-gate bypass label must re-run the gate
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Two runs of one PR would deploy into the same kind cluster name and flake demo:rollout.
+  group: pr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_ENV: test
+  # The head of the PR branch, not the merge commit github.sha points to on pull_request.
+  HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/invest-api
+  COST_BYPASS_LABEL: cost-approved
+
+jobs:
+  gates:
+    name: gates — types, contract, architecture
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: 1. types + lint
+        run: |
+          npx tsc --noEmit
+          npm run -s lint
+      - name: 2. contract — oasdiff against the base branch's spec
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
+        run: |
+          git fetch --depth=1 origin "$BASE_REF"
+          git show FETCH_HEAD:openapi/openapi.yaml > "$RUNNER_TEMP/base.yaml"
+          bash scripts/oasdiff.sh "$RUNNER_TEMP/base.yaml" openapi/openapi.yaml
+      - name: 3. architecture — dependency-cruiser
+        run: npm run -s arch
+
+  test:
+    name: compile + integration + e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      # Both suites bring their own postgres:16-alpine (testcontainers).
+      - run: npm run test:integration
+      - run: npm run test:e2e
+
+  contract:
+    name: contract + broker gate
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      # The fallback is the address of the broker this job starts itself — an address, not a credential.
+      PACT_BROKER_URL: ${{ secrets.PACT_BROKER_URL || 'http://127.0.0.1:9292' }}
+      PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
+      CONSUMER: invest-web
+      PROVIDER: invest-api
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Start the pact broker
+        if: ${{ contains(env.PACT_BROKER_URL, '127.0.0.1') }}
+        run: docker compose up -d --wait pact-broker
+      - name: Record the version under test
+        run: echo "PACT_VERSION=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+      - name: Generate the contract (consumer)
+        run: npm run test:contract
+      - name: Check every interaction path exists in the OpenAPI spec
+        run: |
+          node -e 'const p=require("./pacts/invest-web-invest-api.json");const spec=require("fs").readFileSync("openapi/openapi.yaml","utf8");const sp=[...spec.matchAll(/^\s+(\/\S*):\s*$/gm)].map(m=>m[1]);const seg=s=>s.split("?")[0].replace(/\/+$/,"").split("/");const fit=(a,b)=>{a=seg(a);b=seg(b);return a.length===b.length&&a.every((x,i)=>/^\{[^}]+\}$/.test(x)?b[i]!=="":x===b[i])};const bad=p.interactions.filter(i=>!sp.some(x=>fit(x,i.request.path)));console.log(bad.length?"NOT IN SPEC: "+bad.map(i=>i.request.path).join(", "):"OK");process.exit(bad.length?1:0)'
+      - name: Publish the contract to the broker
+        run: |
+          AUTH=()
+          [ -n "$PACT_BROKER_TOKEN" ] && AUTH=(-H "Authorization: Bearer $PACT_BROKER_TOKEN")
+          code=$(curl -sS -o /dev/stderr -w '%{http_code}' -X PUT \
+            "$PACT_BROKER_URL/pacts/provider/$PROVIDER/consumer/$CONSUMER/version/$PACT_VERSION" \
+            "${AUTH[@]}" -H 'Content-Type: application/json' \
+            -d @pacts/invest-web-invest-api.json)
+          echo "publish -> $code"
+          [ "$code" = "200" ] || [ "$code" = "201" ]
+      - name: Verify the provider and publish the result
+        run: npm run verify:provider
+      - name: Tag the verified provider version as prod
+        run: |
+          AUTH=()
+          [ -n "$PACT_BROKER_TOKEN" ] && AUTH=(-H "Authorization: Bearer $PACT_BROKER_TOKEN")
+          curl -sS -f -X PUT \
+            "$PACT_BROKER_URL/pacticipants/$PROVIDER/versions/$PACT_VERSION/tags/prod" \
+            "${AUTH[@]}" -H 'Content-Type: application/json'
+      - name: can-i-deploy
+        run: bash scripts/can-i-deploy.sh "$CONSUMER" "$PACT_VERSION" prod
+
+  build:
+    name: build once + scan gate
+    needs: gates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # GHCR through GITHUB_TOKEN; no registry secret exists
+    outputs:
+      image-ref: ${{ steps.ref.outputs.image-ref }}
+      digest: ${{ steps.build.outputs.digest }}
+      scan-exit: ${{ steps.scan.outputs.scan-exit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: ref
+        run: echo "image-ref=$IMAGE_REPO:$HEAD_SHA" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Throwaway build secret: no private registry; #28's demo:image proved it reaches no layer.
+      - name: Build-stage secret (decoy)
+        run: openssl rand -hex 16 > .npm_token
+      # The ONLY place in the pipeline where an image is built. Its digest is what every
+      # environment deploys; the tag is for humans.
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: ${{ steps.ref.outputs.image-ref }}
+          secret-files: npm_token=.npm_token
+          provenance: false
+          sbom: false
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Record the build invocation
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          REF: ${{ steps.ref.outputs.image-ref }}
+        run: |
+          mkdir -p build-out
+          echo "run=$GITHUB_RUN_ID ref=$REF digest=$DIGEST" >> build-out/build.log
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-log
+          path: build-out/build.log
+      - uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.76.2
+      # The #28 scan gate, unchanged threshold, on the pushed digest.
+      - id: scan
+        name: Scan gate
+        env:
+          IMAGE: ${{ steps.ref.outputs.image-ref }}@${{ steps.build.outputs.digest }}
+        run: |
+          set +e
+          npm run -s scan
+          rc=$?
+          echo "scan-exit=$rc" >> "$GITHUB_OUTPUT"
+          exit "$rc"
+
+  oidc:
+    name: OIDC gate (before deploy)
+    needs: gates
+    runs-on: ubuntu-latest
+    # sub = repo:<owner>@<id>/<repo>@<id>:environment:kind — what oidc/policy.json allows.
+    environment: kind
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write   # this job only: the one that asks for a token in my name
+    outputs:
+      iss: ${{ steps.gate.outputs.iss }}
+      aud: ${{ steps.gate.outputs.aud }}
+      sub: ${{ steps.gate.outputs.sub }}
+      sig-verified: ${{ steps.gate.outputs.sig-verified }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: gate
+        uses: ./.github/actions/oidc-gate
+
+  deploy-kind:
+    name: deploy to kind + demo:rollout
+    needs: [gates, test, contract, build, oidc]
+    runs-on: ubuntu-latest
+    # Secrets set on the 'kind' environment are visible only to jobs that name it.
+    environment: kind
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - uses: ./.github/actions/kind-deploy
+        with:
+          image: ${{ needs.build.outputs.image-ref }}@${{ needs.build.outputs.digest }}
+          cost-bypass: ${{ contains(github.event.pull_request.labels.*.name, env.COST_BYPASS_LABEL) && env.COST_BYPASS_LABEL || '' }}
+          infisical-token: ${{ secrets.INFISICAL_TOKEN }}
+          infisical-project-id: ${{ secrets.INFISICAL_PROJECT_ID }}
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: deploy-out
+          path: evidence/
+
+  evidence:
+    name: pipeline-evidence
+    needs: [build, oidc, deploy-kind]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Not a gate: on a red run some of these artifacts do not exist.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          merge-multiple: true
+          path: evidence
+      - name: evidence.txt
+        env:
+          RUN_ID: ${{ github.run_id }}
+          IMAGE_REF: ${{ needs.build.outputs.image-ref }}
+          BUILT_DIGEST: ${{ needs.build.outputs.digest }}
+          SCAN_EXIT: ${{ needs.build.outputs.scan-exit }}
+          OIDC_ISS: ${{ needs.oidc.outputs.iss }}
+          OIDC_AUD: ${{ needs.oidc.outputs.aud }}
+          OIDC_SUB: ${{ needs.oidc.outputs.sub }}
+          OIDC_SIG: ${{ needs.oidc.outputs.sig-verified }}
+        run: |
+          mkdir -p evidence
+          bash scripts/evidence.sh evidence
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pipeline-evidence
+          path: |
+            evidence/evidence.txt
+            evidence/deployment.json
+            evidence/plan.json
+            evidence/rollout.txt
+            evidence/build.log

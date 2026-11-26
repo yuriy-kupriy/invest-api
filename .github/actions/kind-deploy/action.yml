@@ -1,0 +1,122 @@
+name: kind-deploy
+description: >
+  The HW #28 deployment, run by the pipeline: kind in the runner, the image BY
+  DIGEST, pulumi preview -> cost gate -> pulumi up -> demo:rollout (failed must
+  be 0). Raw files land in ./evidence for the evidence job. App secrets come
+  from the vault (scripts/with-secrets.sh) when vault access is passed in, else
+  they are throwaway values generated in the job.
+inputs:
+  image:
+    description: ghcr.io/<owner>/invest-api@sha256:<digest> — never a tag
+    required: true
+  cost-bypass:
+    description: name of the bypass label when the PR carries it, else empty
+    default: ''
+  infisical-token:
+    description: vault access (HW #11); empty -> throwaway app secrets for this run
+    default: ''
+  infisical-project-id:
+    description: vault project
+    default: ''
+  min-requests:
+    description: demo:rollout sample size
+    default: '2000'
+runs:
+  using: composite
+  steps:
+    # Vault when access was given; otherwise throwaway values made here, masked, gone with
+    # the runner. Either way no app secret is stored in GitHub.
+    - name: App secrets — vault, or throwaway for this run
+      shell: bash
+      env:
+        HAS_TOKEN: ${{ inputs.infisical-token != '' }}
+      run: |
+        if [ "$HAS_TOKEN" = true ]; then echo "app-secrets=vault"; exit 0; fi
+        echo "app-secrets=throwaway (no INFISICAL_TOKEN)"
+        node -e '
+          const c = require("node:crypto"), fs = require("node:fs");
+          const r = (n) => c.randomBytes(n).toString("hex");
+          const k = c.generateKeyPairSync("ec", { namedCurve: "P-256",
+            privateKeyEncoding: { type: "pkcs8", format: "pem" },
+            publicKeyEncoding: { type: "spki", format: "pem" } });
+          const v = {
+            // host is replaced by the in-cluster postgres (as in #28); role/db are not secret
+            DB_URL: "postgres://invest_app@db.example.invalid:6432/invest",
+            DB_PASSWORD: r(24), JWT_KID: "ci-" + r(8),
+            JWT_PRIVATE_KEY: Buffer.from(k.privateKey).toString("base64"),
+            JWT_PUBLIC_KEY: Buffer.from(k.publicKey).toString("base64"),
+            REFRESH_TOKEN_PEPPER: r(32), STORAGE_REGION: "eu-ci-1",
+            STORAGE_BUCKET: "invest-ci-" + r(4), STORAGE_ACCESS_KEY: r(16),
+            STORAGE_SECRET_KEY: r(32), PULUMI_CONFIG_PASSPHRASE: r(32), SKIP_VAULT: "1" };
+          for (const [n, x] of Object.entries(v)) {
+            if (x.length >= 16) console.log("::add-mask::" + x);
+            fs.appendFileSync(process.env.GITHUB_ENV, n + "=" + x + "\n");
+          }'
+
+    - name: Install pulumi + infisical CLIs (pinned versions)
+      shell: bash
+      run: |
+        curl -fsSL https://github.com/pulumi/pulumi/releases/download/v3.276.0/pulumi-v3.276.0-linux-x64.tar.gz \
+          | tar xz -C "$RUNNER_TEMP"
+        echo "$RUNNER_TEMP/pulumi" >> "$GITHUB_PATH"
+        curl -fsSL -o "$RUNNER_TEMP/infisical.deb" \
+          https://github.com/Infisical/cli/releases/download/v0.45.3/infisical_0.45.3_linux_amd64.deb
+        sudo dpkg -i "$RUNNER_TEMP/infisical.deb" >/dev/null
+        mkdir -p evidence
+
+    - name: kind cluster (one node, NodePort 30080 on 127.0.0.1)
+      uses: helm/kind-action@ea822c7bf1874f08e5a491df991c228edffc3376 # v1.15.2
+      with:
+        cluster_name: invest
+        config: k8s/kind-config.yaml
+
+    - name: Point the stack at the digest
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+        INFISICAL_TOKEN: ${{ inputs.infisical-token }}
+        INFISICAL_PROJECT_ID: ${{ inputs.infisical-project-id }}
+      run: |
+        npm --prefix infra ci --silent
+        # The node pulls exactly this digest; REV = digest changes the pod template.
+        bash scripts/with-secrets.sh dev bash scripts/pulumi.sh config set image "$IMAGE"
+        bash scripts/with-secrets.sh dev bash scripts/pulumi.sh config set rev "${IMAGE##*@sha256:}"
+
+    - name: pulumi preview
+      shell: bash
+      env:
+        INFISICAL_TOKEN: ${{ inputs.infisical-token }}
+        INFISICAL_PROJECT_ID: ${{ inputs.infisical-project-id }}
+      run: bash scripts/with-secrets.sh dev bash scripts/pulumi.sh preview --json > evidence/plan.json
+
+    # Reacts to the change, not the sum: budget = main's cost + max($10, 20 %).
+    # The baseline lives in one file (infra/cost-baseline-usd.txt) for both workflows.
+    - name: Cost gate
+      shell: bash
+      env:
+        PLAN_JSON: evidence/plan.json
+        COST_BYPASS: ${{ inputs.cost-bypass }}
+      run: |
+        b=$(cat infra/cost-baseline-usd.txt)
+        COST_BUDGET_USD=$(node -e 'const b=Number(process.argv[1]);console.log((b+Math.max(10,b*0.2)).toFixed(2))' "$b") \
+          npm run -s gate:cost
+
+    - name: pulumi up
+      shell: bash
+      env:
+        INFISICAL_TOKEN: ${{ inputs.infisical-token }}
+        INFISICAL_PROJECT_ID: ${{ inputs.infisical-project-id }}
+      run: |
+        npm run -s up
+        kubectl -n invest rollout status deploy/invest-api --timeout=180s
+        kubectl -n invest get deploy invest-api -o json > evidence/deployment.json
+        bash scripts/with-secrets.sh dev bash scripts/secret-count.sh evidence/deployment.json > evidence/secret-count.txt
+        echo "secret-in-manifest=$(cat evidence/secret-count.txt)"
+
+    - name: demo:rollout (failed must be 0)
+      shell: bash
+      env:
+        MIN_REQUESTS: ${{ inputs.min-requests }}
+        INFISICAL_TOKEN: ${{ inputs.infisical-token }}
+        INFISICAL_PROJECT_ID: ${{ inputs.infisical-project-id }}
+      run: npm run -s demo:rollout | tee evidence/rollout.txt

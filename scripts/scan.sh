@@ -9,7 +9,8 @@ set -euo pipefail
 IMAGE="${IMAGE:-invest-api:hw28}"
 SEVERITY="${SEVERITY:-CRITICAL,HIGH}"
 # Working threshold: the fixable CRITICAL+HIGH count measured when this was
-# written (7 in the distroless libssl3, 23 in npm deps; README ## Kubernetes). The trivy DB updates daily,
+# written (7 in the distroless libssl3, 23 in npm deps; README ## Kubernetes). HW #32 patched the npm
+# ones through package.json overrides: 7 left, all in the base image. The trivy DB updates daily,
 # so this is a ceiling to keep from growing, not a promise of zero.
 MAX="${SCAN_MAX:-30}"
 
